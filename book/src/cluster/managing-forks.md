@@ -23,7 +23,7 @@ A fullnode may vote on any checkpoint in the tree. In the diagram above, that's 
 
 Starting from the example above, wth a rollback depth of 2, consider a vote on 5 versus a vote on 6. First, a vote on 5:
 
-![Forks after pruning](../.gitbook/assets/forks-pruned.svg)
+![Forks after pruning](../.gitbook/assets/forks-pruned%20%281%29.svg)
 
 The new root is 2, and any active forks that are not descendants from 2 are pruned.
 
