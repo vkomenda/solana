@@ -3,7 +3,7 @@
 
 FROM rust:latest
 
-RUN dpkg --add-architecture aarch64 && \
+RUN dpkg --add-architecture arm64 && \
     apt-get update && apt-get upgrade -y && \
     apt-get install -y aptitude && \
     aptitude install -y \
@@ -15,7 +15,7 @@ RUN dpkg --add-architecture aarch64 && \
         git \
         clang \
         libclang-dev \
-        libssl-dev:aarch64
+        libssl-dev:arm64
 
 RUN rustup target add aarch64-unknown-linux-gnu
 RUN rustup install nightly
