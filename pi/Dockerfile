@@ -15,6 +15,8 @@ RUN dpkg --add-architecture arm64 && \
         git \
         clang \
         libclang-dev \
+        libhidapi-dev \
+        libudev-dev \
         libssl-dev:arm64
 
 RUN rustup target add aarch64-unknown-linux-gnu
