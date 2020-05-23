@@ -2439,16 +2439,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "reed-solomon-erasure"
-version = "4.0.0"
-source = "git+https://github.com/vkomenda/reed-solomon-erasure.git?branch=pi#4c1ec180e3458267a780a32c8aabac9855def1e9"
-dependencies = [
- "cc",
- "libc",
- "smallvec 0.6.13",
-]
-
-[[package]]
 name = "regex"
 version = "1.3.7"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3525,7 +3515,6 @@ dependencies = [
  "rand 0.7.3",
  "rand_chacha 0.2.2",
  "rayon",
- "reed-solomon-erasure",
  "regex",
  "rocksdb",
  "serde",
@@ -3539,6 +3528,7 @@ dependencies = [
  "solana-metrics",
  "solana-perf",
  "solana-rayon-threadlimit",
+ "solana-reed-solomon-erasure",
  "solana-runtime",
  "solana-sdk",
  "solana-stake-program",
@@ -3736,6 +3726,16 @@ version = "1.1.14"
 dependencies = [
  "lazy_static",
  "num_cpus",
+]
+
+[[package]]
+name = "solana-reed-solomon-erasure"
+version = "4.0.1-3"
+source = "git+https://github.com/vkomenda/reed-solomon-erasure.git?branch=solana-pi#b892c33bd1e00c2d7d928f3e487bd1ab94c59f9c"
+dependencies = [
+ "cc",
+ "libc",
+ "smallvec 0.6.13",
 ]
 
 [[package]]
