@@ -11,17 +11,21 @@ RUN dpkg --add-architecture arm64 && \
         g++-aarch64-linux-gnu \
         pkg-config \
         cmake \
-        libssl-dev \
         git \
         clang \
         libclang-dev \
         libhidapi-dev \
+        libhidapi-dev:arm64 \
+        libssl-dev \
+        libssl-dev:arm64 \
         libudev-dev \
-        libssl-dev:arm64
+        libudev-dev:arm64
 
-RUN rustup target add aarch64-unknown-linux-gnu
 RUN rustup install nightly
+RUN rustup target add aarch64-unknown-linux-gnu --toolchain nightly
+RUN rustup default nightly
 
+ENV CARGO_TARGET_AARCH64_UNKNOWN_LINUX_GNU_LINKER aarch64-linux-gnu-gcc
 ENV PKG_CONFIG_ALLOW_CROSS 1
 ENV PKG_CONFIG_PATH /usr/lib/aarch64-linux-gnu/pkgconfig/
 
