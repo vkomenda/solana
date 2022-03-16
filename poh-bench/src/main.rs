@@ -5,6 +5,7 @@ use solana_entry::entry::{self, create_ticks, init_poh, EntrySlice, VerifyRecycl
 use solana_entry::entry::{create_ticks, init_poh, EntrySlice, VerifyRecyclers};
 use {
     clap::{crate_description, crate_name, Arg, Command},
+    solana_fpga::FpgaPerf,
     solana_measure::measure::Measure,
     solana_perf::perf_libs,
     solana_sdk::hash::hash,
@@ -62,6 +63,12 @@ fn main() {
                 .takes_value(false)
                 .help("Use cuda"),
         )
+        .arg(
+            Arg::with_name("xilinx")
+                .long("xilinx")
+                .takes_value(false)
+                .help("Use a Xilinx FPGA"),
+        )
         .get_matches();
 
     let max_num_entries: u64 = matches.value_of_t("max_num_entries").unwrap_or(64);
@@ -76,6 +83,11 @@ fn main() {
     if matches.is_present("cuda") {
         perf_libs::init_cuda();
     }
+    let mut fpga = if matches.is_present("xilinx") {
+        Some(FpgaPerf::new().expect("cannot initialize FPGA"))
+    } else {
+        None
+    };
     init_poh();
     while num_entries <= max_num_entries as usize {
         let mut time = Measure::start("time");
@@ -141,6 +153,18 @@ fn main() {
                 num_entries,
                 time.as_us() / iterations as u64
             );
+        }
+
+        if let Some(fpga) = fpga {
+            let mut time = Measure::start("time");
+            let recyclers = VerifyRecyclers::default();
+            for _ in 0..iterations {
+                assert!(ticks[..num_entries]
+                    .start_verify_fpga(&mut fpga, &start_hash, recyclers.clone())
+                    .finish_verify());
+            }
+            time.stop();
+            println!("{},fpga,{}", num_entries, time.as_us() / iterations as u64);
         }
 
         println!();

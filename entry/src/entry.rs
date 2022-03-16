@@ -11,6 +11,7 @@ use {
     rand::{thread_rng, Rng},
     rayon::{prelude::*, ThreadPool},
     serde::{Deserialize, Serialize},
+    solana_fpga::{FpgaPerf, DEMUX_ROUND_LEN},
     solana_measure::measure::Measure,
     solana_merkle_tree::MerkleTree,
     solana_metrics::*,
@@ -23,7 +24,7 @@ use {
     },
     solana_rayon_threadlimit::get_thread_count,
     solana_sdk::{
-        hash::Hash,
+        hash::{Hash, HASH_BYTES},
         packet::Meta,
         timing,
         transaction::{
@@ -248,9 +249,15 @@ pub struct GpuVerificationData {
     verifications: Option<Vec<(VerifyAction, Hash)>>,
 }
 
+pub struct FpgaVerificationData {
+    hashes: Option<Arc<Mutex<PinnedVec<Hash>>>>,
+    verifications: Option<Vec<(VerifyAction, Hash)>>,
+}
+
 pub enum DeviceVerificationData {
     Cpu(),
     Gpu(GpuVerificationData),
+    Fpga(FpgaVerificationData),
 }
 
 pub struct EntryVerificationState {
@@ -369,6 +376,10 @@ impl EntryVerificationState {
                     EntryVerificationStatus::Failure
                 };
                 res
+            }
+            DeviceVerificationData::Fpga(verification_state) => {
+                // TODO
+                EntryVerificationStatus::Failure
             }
             DeviceVerificationData::Cpu() => {
                 self.verification_status == EntryVerificationStatus::Success
@@ -593,6 +604,8 @@ pub trait EntrySlice {
     fn start_verify(&self, start_hash: &Hash, recyclers: VerifyRecyclers)
         -> EntryVerificationState;
     fn verify(&self, start_hash: &Hash) -> bool;
+    fn start_verify_fpga(&self, fpga: &mut FpgaPerf, start_hash: &Hash) -> EntryVerificationState;
+    fn verify_fpga(&self, fpga: &mut FpgaPerf, start_hash: &Hash) -> bool;
     /// Checks that each entry tick has the correct number of hashes. Entry slices do not
     /// necessarily end in a tick, so `tick_hash_count` is used to carry over the hash count
     /// for the next entry slice.
@@ -605,6 +618,10 @@ impl EntrySlice for [Entry] {
     fn verify(&self, start_hash: &Hash) -> bool {
         self.start_verify(start_hash, VerifyRecyclers::default())
             .finish_verify()
+    }
+
+    fn verify_fpga(&self, fpga: &mut FpgaPerf, start_hash: &Hash) -> bool {
+        self.start_verify_fpga(fpga, start_hash).finish_verify()
     }
 
     fn verify_cpu_generic(&self, start_hash: &Hash) -> EntryVerificationState {
@@ -645,7 +662,6 @@ impl EntrySlice for [Entry] {
     }
 
     fn verify_cpu_x86_simd(&self, start_hash: &Hash, simd_len: usize) -> EntryVerificationState {
-        use solana_sdk::hash::HASH_BYTES;
         let now = Instant::now();
         let genesis = [Entry {
             num_hashes: 0,
@@ -840,6 +856,48 @@ impl EntrySlice for [Entry] {
         EntryVerificationState {
             verification_status: EntryVerificationStatus::Pending,
             poh_duration_us: timing::duration_as_us(&start.elapsed()),
+            device_verification_data,
+        }
+    }
+
+    fn start_verify_fpga(&self, fpga: &mut FpgaPerf, start_hash: &Hash) -> EntryVerificationState {
+        let now = Instant::now();
+        inc_new_counter_info!("entry_verify-num_entries", self.len() as usize);
+
+        let genesis = [Entry {
+            num_hashes: 0,
+            hash: *start_hash,
+            transactions: vec![],
+        }];
+
+        // Length of payload padded to the size of AXI-Stream packet demultiplexer round capacity.
+        let aligned_len = ((self.len() + DEMUX_ROUND_LEN - 1) / DEMUX_ROUND_LEN) * DEMUX_ROUND_LEN;
+        let mut hash_iter_bytes = vec![0u8; (HASH_BYTES + 8) * aligned_len];
+        genesis
+            .iter()
+            .chain(self)
+            .enumerate()
+            .for_each(|(i, entry)| {
+                if 0 < i && i < self.len() {
+                    let start_hash = i * (HASH_BYTES + 8);
+                    let end = start_hash + HASH_BYTES;
+                    let start_iters = start_hash - 8;
+                    hash_iter_bytes[start_iters..start_hash]
+                        .copy_from_slice(&entry.num_hashes.saturating_sub(1).to_le_bytes());
+                    hash_iter_bytes[start_hash..end].copy_from_slice(&entry.hash.to_bytes());
+                }
+            });
+
+        let res = fpga.poh_verify_many(&hash_iter_bytes);
+        // TODO
+
+        let device_verification_data = DeviceVerificationData::Fpga(FpgaVerificationData {
+            verifications: Some(verifications),
+            hashes: Some(hashes),
+        });
+        EntryVerificationState {
+            verification_status: EntryVerificationStatus::Pending,
+            poh_duration_us: timing::duration_as_us(&now.elapsed()),
             device_verification_data,
         }
     }
