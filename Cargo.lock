@@ -4691,8 +4691,10 @@ dependencies = [
 name = "solana-fpga"
 version = "0.1.0"
 dependencies = [
- "borsh",
- "solana-sdk",
+ "log",
+ "rand 0.7.3",
+ "rayon",
+ "solana-logger",
  "warp-devices",
 ]
 
@@ -7066,6 +7068,7 @@ dependencies = [
 [[package]]
 name = "warp-devices"
 version = "0.1.0"
+source = "git+https://github.com/Quarky93/warpshell.git#373b7bdf1035eef6d032ad50ace60882fc207ef6"
 dependencies = [
  "enum-iterator",
  "enum-iterator-derive",

@@ -1,0 +1,16 @@
+[package]
+authors = ["Vladimir Komendantskiy <komendantsky@gmail.com>"]
+edition = "2021"
+name = "solana-fpga"
+version = "0.1.0"
+repository = "https://github.com/vkomenda/solana"
+license = "Apache-2.0"
+homepage = "https://solana.com/"
+publish = false
+
+[dependencies]
+log = "0.4.14"
+rand = "0.7.0"
+rayon = "1.5.1"
+solana-logger = { path = "../logger", version = "=1.11.0" }
+warp-devices = { git = "https://github.com/Quarky93/warpshell.git" }
