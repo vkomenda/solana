@@ -379,7 +379,7 @@ impl EntryVerificationState {
             }
             DeviceVerificationData::Fpga(verification_state) => {
                 // TODO
-                EntryVerificationStatus::Failure
+                self.verification_status == EntryVerificationStatus::Failure
             }
             DeviceVerificationData::Cpu() => {
                 self.verification_status == EntryVerificationStatus::Success
