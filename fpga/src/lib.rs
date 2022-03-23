@@ -1,5 +1,8 @@
+use solana_sdk::hash::HASH_BYTES;
 use std::io::Error as IoError;
-use warp_devices::varium_c1100::VariumC1100;
+use warp_devices::{varium_c1100::VariumC1100, xdma::XdmaOps};
+
+pub use warp_devices::xdma::DmaBuffer;
 
 /// The length of a round of the packet demultiplexer in the FPGA. The length of a packet batch
 /// should be a multiple of this number.
@@ -20,5 +23,12 @@ impl FpgaPerf {
     pub fn new() -> Result<Self> {
         let device = VariumC1100::new().map_err(Error::CannotCreateDevice)?;
         Ok(Self { device })
+    }
+
+    pub fn poh_verify_many(&mut self, input_buffer: &DmaBuffer) -> Result<()> {
+        let num_packets = input_buffer.as_slice().len();
+        self.device.dma_write(input_buffer, 0);
+        let output_buffer = DmaBuffer::new(num_packets * HASH_BYTES);
+        Ok(())
     }
 }
