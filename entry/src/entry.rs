@@ -233,11 +233,6 @@ pub fn next_hash(
     }
 }
 
-enum Accelerator {
-    Gpu,
-    Fpga(FpgaPerf),
-}
-
 /// Last action required to verify an entry
 enum VerifyAction {
     /// Mixin a hash before computing the last hash for a transaction entry
@@ -254,9 +249,16 @@ pub struct GpuVerificationData {
     verifications: Option<Vec<(VerifyAction, Hash)>>,
 }
 
+pub struct FpgaVerificationData {
+    // thread_h: Option<JoinHandle<u64>>,
+    hashes: Vec<Hash>,
+    verifications: Vec<(VerifyAction, Hash)>,
+}
+
 pub enum DeviceVerificationData {
     Cpu(),
     Gpu(GpuVerificationData),
+    Fpga(FpgaVerificationData),
 }
 
 pub struct EntryVerificationState {
@@ -343,7 +345,7 @@ impl EntryVerificationState {
 
                 let mut verify_check_time = Measure::start("verify_check");
                 let hashes = verification_state.hashes.take().unwrap();
-                let hashes = Arc::try_unwrap(hashes)
+                let hashes: PinnedVec<Hash> = Arc::try_unwrap(hashes)
                     .expect("unwrap Arc")
                     .into_inner()
                     .expect("into_inner");
@@ -368,6 +370,41 @@ impl EntryVerificationState {
 
                 verify_check_time.stop();
                 self.poh_duration_us += gpu_time_us + verify_check_time.as_us();
+
+                self.verification_status = if res {
+                    EntryVerificationStatus::Success
+                } else {
+                    EntryVerificationStatus::Failure
+                };
+                res
+            }
+            DeviceVerificationData::Fpga(verification_state) => {
+                // TODO
+                let fpga_time_us = 0; // verification_state.thread_h.take().unwrap().join().unwrap();
+
+                let mut verify_check_time = Measure::start("verify_check");
+                let hashes = verification_state.hashes;
+                let res = PAR_THREAD_POOL.with(|thread_pool| {
+                    thread_pool.borrow().install(|| {
+                        hashes
+                            .par_iter()
+                            .cloned()
+                            .zip(verification_state.verifications)
+                            .all(|(hash, (action, expected))| {
+                                let actual = match action {
+                                    VerifyAction::Mixin(mixin) => {
+                                        Poh::new(hash, None).record(mixin).unwrap().hash
+                                    }
+                                    VerifyAction::Tick => Poh::new(hash, None).tick().unwrap().hash,
+                                    VerifyAction::None => hash,
+                                };
+                                actual == expected
+                            })
+                    })
+                });
+
+                verify_check_time.stop();
+                self.poh_duration_us += fpga_time_us + verify_check_time.as_us();
 
                 self.verification_status = if res {
                     EntryVerificationStatus::Success
@@ -596,12 +633,9 @@ pub trait EntrySlice {
     fn verify_cpu(&self, start_hash: &Hash) -> EntryVerificationState;
     fn verify_cpu_generic(&self, start_hash: &Hash) -> EntryVerificationState;
     fn verify_cpu_x86_simd(&self, start_hash: &Hash, simd_len: usize) -> EntryVerificationState;
-    fn start_verify(
-        &self,
-        accelerator: Accelerator,
-        start_hash: &Hash,
-        recyclers: VerifyRecyclers,
-    ) -> EntryVerificationState;
+    fn par_verifications(&self) -> Vec<(VerifyAction, Hash)>;
+    fn start_verify(&self, start_hash: &Hash, recyclers: VerifyRecyclers)
+        -> EntryVerificationState;
     fn verify(&self, start_hash: &Hash) -> bool;
     fn start_verify_fpga(&self, fpga: &mut FpgaPerf, start_hash: &Hash) -> EntryVerificationState;
     fn verify_fpga(&self, fpga: &mut FpgaPerf, start_hash: &Hash) -> bool;
@@ -764,9 +798,30 @@ impl EntrySlice for [Entry] {
         }
     }
 
+    fn par_verifications(&self) -> Vec<(VerifyAction, Hash)> {
+        PAR_THREAD_POOL.with(|thread_pool| {
+            thread_pool.borrow().install(|| {
+                self.into_par_iter()
+                    .map(|entry| {
+                        let answer = entry.hash;
+                        let action = if entry.transactions.is_empty() {
+                            if entry.num_hashes == 0 {
+                                VerifyAction::None
+                            } else {
+                                VerifyAction::Tick
+                            }
+                        } else {
+                            VerifyAction::Mixin(hash_transactions(&entry.transactions))
+                        };
+                        (action, answer)
+                    })
+                    .collect()
+            })
+        })
+    }
+
     fn start_verify(
         &self,
-        accelerator: Accelerator,
         start_hash: &Hash,
         recyclers: VerifyRecyclers,
     ) -> EntryVerificationState {
@@ -811,25 +866,16 @@ impl EntrySlice for [Entry] {
         let verify_thread = thread::spawn(move || {
             let mut hashes = hashes_clone.lock().unwrap();
             let gpu_wait = Instant::now();
-            match accelerator {
-                Accelerator::Gpu => {
-                    let res;
-                    unsafe {
-                        res = (api.poh_verify_many)(
-                            hashes.as_mut_ptr() as *mut u8,
-                            num_hashes_vec.as_ptr(),
-                            length,
-                            1,
-                        );
-                    }
-                    assert!(res == 0, "GPU PoH verify many failed");
-                }
-
-                // TODO: remove and revert this fn
-                Accelerator::Fpga(fpga) => {
-                    let res = fpga.poh_verify_many(&hash_iter_bytes);
-                }
+            let res;
+            unsafe {
+                res = (api.poh_verify_many)(
+                    hashes.as_mut_ptr() as *mut u8,
+                    num_hashes_vec.as_ptr(),
+                    length,
+                    1,
+                );
             }
+            assert!(res == 0, "GPU PoH verify many failed");
             inc_new_counter_info!(
                 "entry_verify-gpu_thread",
                 timing::duration_as_us(&gpu_wait.elapsed()) as usize
@@ -837,29 +883,9 @@ impl EntrySlice for [Entry] {
             timing::duration_as_us(&gpu_wait.elapsed())
         });
 
-        let verifications = PAR_THREAD_POOL.with(|thread_pool| {
-            thread_pool.borrow().install(|| {
-                self.into_par_iter()
-                    .map(|entry| {
-                        let answer = entry.hash;
-                        let action = if entry.transactions.is_empty() {
-                            if entry.num_hashes == 0 {
-                                VerifyAction::None
-                            } else {
-                                VerifyAction::Tick
-                            }
-                        } else {
-                            VerifyAction::Mixin(hash_transactions(&entry.transactions))
-                        };
-                        (action, answer)
-                    })
-                    .collect()
-            })
-        });
-
         let device_verification_data = DeviceVerificationData::Gpu(GpuVerificationData {
             thread_h: Some(verify_thread),
-            verifications: Some(verifications),
+            verifications: Some(self.par_verifications()),
             hashes: Some(hashes),
         });
         EntryVerificationState {
@@ -870,7 +896,7 @@ impl EntrySlice for [Entry] {
     }
 
     fn start_verify_fpga(&self, fpga: &mut FpgaPerf, start_hash: &Hash) -> EntryVerificationState {
-        let now = Instant::now();
+        let start = Instant::now();
         inc_new_counter_info!("entry_verify-num_entries", self.len() as usize);
 
         let genesis = [Entry {
@@ -881,32 +907,41 @@ impl EntrySlice for [Entry] {
 
         // Length of payload padded to the size of AXI-Stream packet demultiplexer round capacity.
         let aligned_len = ((self.len() + DEMUX_ROUND_LEN - 1) / DEMUX_ROUND_LEN) * DEMUX_ROUND_LEN;
+        // Allocate a buffer big enough for it not to get reallocated to keep the DMA page
+        // alignment. The buffer contains packets (hash, n) where the n is the number of times the
+        // SHA-256 hash function should be iterated over hash.
         let mut dma_buffer = DmaBuffer::new((HASH_BYTES + 8) * aligned_len);
         genesis
             .iter()
             .chain(self)
-            .enumerate()
-            .for_each(|(i, entry)| {
-                if 0 < i && i < self.len() {
-                    let start_hash = i * (HASH_BYTES + 8);
-                    let end = start_hash + HASH_BYTES;
-                    let start_iters = start_hash - 8;
-                    dma_buffer.0[start_iters..start_hash]
-                        .copy_from_slice(&entry.num_hashes.saturating_sub(1).to_le_bytes());
-                    dma_buffer.0[start_hash..end].copy_from_slice(&entry.hash.to_bytes());
-                }
+            .zip(self)
+            .for_each(|(entry0, entry1)| {
+                dma_buffer
+                    .get_mut()
+                    .extend_from_slice(&entry0.hash.to_bytes());
+                dma_buffer
+                    .get_mut()
+                    .extend_from_slice(&entry1.num_hashes.saturating_sub(1).to_le_bytes());
             });
 
-        let res = fpga.poh_verify_many(&mut dma_buffer);
-        // TODO
+        fpga.poh_verify_many(&mut dma_buffer)
+            .expect("start_verify_fpga poh_verify_many");
+        assert_eq!(dma_buffer.as_slice().len(), aligned_len * HASH_BYTES);
+
+        let mut hashes: Vec<Hash> = Vec::with_capacity(self.len());
+        for i in 0..self.len() {
+            hashes.push(Hash::new(
+                &dma_buffer.as_slice()[i * HASH_BYTES..(i + 1) * HASH_BYTES],
+            ));
+        }
 
         let device_verification_data = DeviceVerificationData::Fpga(FpgaVerificationData {
-            verifications: Some(verifications),
-            hashes: Some(hashes),
+            verifications: self.par_verifications(),
+            hashes,
         });
         EntryVerificationState {
             verification_status: EntryVerificationStatus::Pending,
-            poh_duration_us: timing::duration_as_us(&now.elapsed()),
+            poh_duration_us: timing::duration_as_us(&start.elapsed()),
             device_verification_data,
         }
     }

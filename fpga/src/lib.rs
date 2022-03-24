@@ -1,6 +1,9 @@
 use solana_sdk::hash::HASH_BYTES;
 use std::io::Error as IoError;
-use warp_devices::{varium_c1100::VariumC1100, xdma::XdmaOps};
+use warp_devices::{
+    varium_c1100::VariumC1100,
+    xdma::{Error as XdmaError, XdmaOps},
+};
 
 pub use warp_devices::xdma::DmaBuffer;
 
@@ -13,22 +16,42 @@ pub type Result<T> = std::result::Result<T, Error>;
 #[derive(Debug)]
 pub enum Error {
     CannotCreateDevice(IoError),
+    Xdma(XdmaError),
 }
 
+impl From<XdmaError> for Error {
+    fn from(e: XdmaError) -> Self {
+        Self::Xdma(e)
+    }
+}
+
+/// FPGA performance interface.
 pub struct FpgaPerf {
     device: VariumC1100,
 }
 
 impl FpgaPerf {
+    /// Create a new FPGA interface.
     pub fn new() -> Result<Self> {
         let device = VariumC1100::new().map_err(Error::CannotCreateDevice)?;
         Ok(Self { device })
     }
 
-    pub fn poh_verify_many(&mut self, input_buffer: &DmaBuffer) -> Result<()> {
-        let num_packets = input_buffer.as_slice().len();
-        self.device.dma_write(input_buffer, 0);
-        let output_buffer = DmaBuffer::new(num_packets * HASH_BYTES);
+    /// Computes POH hashes for multiple starting hashes.  `buf` contains packets of the kind
+    /// `(hash, n)` where the `n` is the number of times the SHA-256 hash function should be
+    /// iterated over `hash`. `buf` should consist of a number of batches of 8 packets each for the
+    /// purpose of alignment with the length of a demultiplexer round. The output from the
+    /// accelerator is returned in `buf` and consists of the hashes computed for each input packet.
+    pub fn poh_verify_many(&mut self, buf: &mut DmaBuffer) -> Result<()> {
+        let num_packets = buf.as_slice().len() / (HASH_BYTES + 8);
+        // Check the packet batch alignment with the FPGA demultiplexer.
+        assert_eq!(
+            buf.as_slice().len() % ((HASH_BYTES + 8) * DEMUX_ROUND_LEN),
+            0
+        );
+        self.device.dma_write(buf, 0)?;
+        buf.get_mut().truncate(num_packets * HASH_BYTES);
+        self.device.dma_read(buf, 0)?;
         Ok(())
     }
 }
