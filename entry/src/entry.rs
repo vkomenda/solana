@@ -246,13 +246,13 @@ enum VerifyAction {
 pub struct GpuVerificationData {
     thread_h: Option<JoinHandle<u64>>,
     hashes: Option<Arc<Mutex<PinnedVec<Hash>>>>,
-    verifications: Option<Vec<(VerifyAction, Hash)>>,
+    verifications: Option<PohVerifications>,
 }
 
 pub struct FpgaVerificationData {
     // thread_h: Option<JoinHandle<u64>>,
-    hashes: Vec<Hash>,
-    verifications: Vec<(VerifyAction, Hash)>,
+    hashes: Option<Arc<Mutex<Vec<Hash>>>>,
+    verifications: Option<PohVerifications>,
 }
 
 pub enum DeviceVerificationData {
@@ -329,6 +329,8 @@ pub enum EntryVerificationStatus {
     Pending,
 }
 
+pub struct PohVerifications(Vec<(VerifyAction, Hash)>);
+
 impl EntryVerificationState {
     pub fn status(&self) -> EntryVerificationStatus {
         self.verification_status
@@ -354,7 +356,7 @@ impl EntryVerificationState {
                         hashes
                             .into_par_iter()
                             .cloned()
-                            .zip(verification_state.verifications.take().unwrap())
+                            .zip(verification_state.verifications.take().unwrap().0)
                             .all(|(hash, (action, expected))| {
                                 let actual = match action {
                                     VerifyAction::Mixin(mixin) => {
@@ -383,13 +385,17 @@ impl EntryVerificationState {
                 let fpga_time_us = 0; // verification_state.thread_h.take().unwrap().join().unwrap();
 
                 let mut verify_check_time = Measure::start("verify_check");
-                let hashes = verification_state.hashes;
+                let hashes = verification_state.hashes.take().unwrap();
+                let hashes: Vec<Hash> = Arc::try_unwrap(hashes)
+                    .expect("unwrap Arc")
+                    .into_inner()
+                    .expect("into_inner");
                 let res = PAR_THREAD_POOL.with(|thread_pool| {
                     thread_pool.borrow().install(|| {
                         hashes
                             .par_iter()
                             .cloned()
-                            .zip(verification_state.verifications)
+                            .zip(verification_state.verifications.take().unwrap().0)
                             .all(|(hash, (action, expected))| {
                                 let actual = match action {
                                     VerifyAction::Mixin(mixin) => {
@@ -633,7 +639,7 @@ pub trait EntrySlice {
     fn verify_cpu(&self, start_hash: &Hash) -> EntryVerificationState;
     fn verify_cpu_generic(&self, start_hash: &Hash) -> EntryVerificationState;
     fn verify_cpu_x86_simd(&self, start_hash: &Hash, simd_len: usize) -> EntryVerificationState;
-    fn par_verifications(&self) -> Vec<(VerifyAction, Hash)>;
+    fn poh_verifications(&self) -> PohVerifications;
     fn start_verify(&self, start_hash: &Hash, recyclers: VerifyRecyclers)
         -> EntryVerificationState;
     fn verify(&self, start_hash: &Hash) -> bool;
@@ -798,24 +804,26 @@ impl EntrySlice for [Entry] {
         }
     }
 
-    fn par_verifications(&self) -> Vec<(VerifyAction, Hash)> {
+    fn poh_verifications(&self) -> PohVerifications {
         PAR_THREAD_POOL.with(|thread_pool| {
             thread_pool.borrow().install(|| {
-                self.into_par_iter()
-                    .map(|entry| {
-                        let answer = entry.hash;
-                        let action = if entry.transactions.is_empty() {
-                            if entry.num_hashes == 0 {
-                                VerifyAction::None
+                PohVerifications(
+                    self.into_par_iter()
+                        .map(|entry| {
+                            let answer = entry.hash;
+                            let action = if entry.transactions.is_empty() {
+                                if entry.num_hashes == 0 {
+                                    VerifyAction::None
+                                } else {
+                                    VerifyAction::Tick
+                                }
                             } else {
-                                VerifyAction::Tick
-                            }
-                        } else {
-                            VerifyAction::Mixin(hash_transactions(&entry.transactions))
-                        };
-                        (action, answer)
-                    })
-                    .collect()
+                                VerifyAction::Mixin(hash_transactions(&entry.transactions))
+                            };
+                            (action, answer)
+                        })
+                        .collect::<Vec<(VerifyAction, Hash)>>(),
+                )
             })
         })
     }
@@ -885,7 +893,7 @@ impl EntrySlice for [Entry] {
 
         let device_verification_data = DeviceVerificationData::Gpu(GpuVerificationData {
             thread_h: Some(verify_thread),
-            verifications: Some(self.par_verifications()),
+            verifications: Some(self.poh_verifications()),
             hashes: Some(hashes),
         });
         EntryVerificationState {
@@ -935,8 +943,10 @@ impl EntrySlice for [Entry] {
             ));
         }
 
+        let hashes = Some(Arc::new(Mutex::new(hashes)));
+
         let device_verification_data = DeviceVerificationData::Fpga(FpgaVerificationData {
-            verifications: self.par_verifications(),
+            verifications: Some(self.poh_verifications()),
             hashes,
         });
         EntryVerificationState {
