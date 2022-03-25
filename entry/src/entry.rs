@@ -11,7 +11,7 @@ use {
     rand::{thread_rng, Rng},
     rayon::{prelude::*, ThreadPool},
     serde::{Deserialize, Serialize},
-    solana_fpga::{DmaBuffer, FpgaPerf, DEMUX_ROUND_LEN},
+    solana_fpga::{DmaBuffer, DEMUX_ROUND_LEN},
     solana_measure::measure::Measure,
     solana_merkle_tree::MerkleTree,
     solana_metrics::*,
@@ -243,22 +243,47 @@ enum VerifyAction {
     None,
 }
 
-pub struct GpuVerificationData {
-    thread_h: Option<JoinHandle<u64>>,
-    hashes: Option<Arc<Mutex<PinnedVec<Hash>>>>,
-    verifications: Option<PohVerifications>,
+enum ArcAccelVec<T: Default + Clone + Sized> {
+    Pinned(Arc<Mutex<PinnedVec<T>>>),
+    Std(Arc<Mutex<Vec<T>>>),
 }
 
-pub struct FpgaVerificationData {
-    // thread_h: Option<JoinHandle<u64>>,
-    hashes: Option<Arc<Mutex<Vec<Hash>>>>,
+enum AccelVec<T: Default + Clone + Sized> {
+    Pinned(PinnedVec<T>),
+    Std(Vec<T>),
+}
+
+impl<'a, T: Clone + Send + Sync + Default + Sized> IntoParallelIterator for &'a AccelVec<T> {
+    type Iter = rayon::slice::Iter<'a, T>;
+    type Item = &'a T;
+    fn into_par_iter(self) -> Self::Iter {
+        match self {
+            AccelVec::Pinned(v) => v.par_iter(),
+            AccelVec::Std(v) => v.par_iter(),
+        }
+    }
+}
+
+impl<'a, T: Clone + Send + Sync + Default + Sized> IntoParallelIterator for &'a mut AccelVec<T> {
+    type Iter = rayon::slice::IterMut<'a, T>;
+    type Item = &'a mut T;
+    fn into_par_iter(self) -> Self::Iter {
+        match self {
+            AccelVec::Pinned(v) => v.par_iter_mut(),
+            AccelVec::Std(v) => v.par_iter_mut(),
+        }
+    }
+}
+
+pub struct AccelVerificationData {
+    thread_h: Option<JoinHandle<u64>>,
+    hashes: Option<ArcAccelVec<Hash>>,
     verifications: Option<PohVerifications>,
 }
 
 pub enum DeviceVerificationData {
     Cpu(),
-    Gpu(GpuVerificationData),
-    Fpga(FpgaVerificationData),
+    Accel(AccelVerificationData),
 }
 
 pub struct EntryVerificationState {
@@ -342,15 +367,24 @@ impl EntryVerificationState {
 
     pub fn finish_verify(&mut self) -> bool {
         match &mut self.device_verification_data {
-            DeviceVerificationData::Gpu(verification_state) => {
-                let gpu_time_us = verification_state.thread_h.take().unwrap().join().unwrap();
+            DeviceVerificationData::Accel(verification_state) => {
+                let accel_time_us = verification_state.thread_h.take().unwrap().join().unwrap();
 
                 let mut verify_check_time = Measure::start("verify_check");
-                let hashes = verification_state.hashes.take().unwrap();
-                let hashes: PinnedVec<Hash> = Arc::try_unwrap(hashes)
-                    .expect("unwrap Arc")
-                    .into_inner()
-                    .expect("into_inner");
+                let hashes = match verification_state.hashes.take().unwrap() {
+                    ArcAccelVec::Pinned(v) => AccelVec::Pinned(
+                        Arc::try_unwrap(v)
+                            .expect("unwrap Arc")
+                            .into_inner()
+                            .expect("into_inner"),
+                    ),
+                    ArcAccelVec::Std(v) => AccelVec::Std(
+                        Arc::try_unwrap(v)
+                            .expect("unwrap Arc")
+                            .into_inner()
+                            .expect("into_inner"),
+                    ),
+                };
                 let res = PAR_THREAD_POOL.with(|thread_pool| {
                     thread_pool.borrow().install(|| {
                         hashes
@@ -371,46 +405,7 @@ impl EntryVerificationState {
                 });
 
                 verify_check_time.stop();
-                self.poh_duration_us += gpu_time_us + verify_check_time.as_us();
-
-                self.verification_status = if res {
-                    EntryVerificationStatus::Success
-                } else {
-                    EntryVerificationStatus::Failure
-                };
-                res
-            }
-            DeviceVerificationData::Fpga(verification_state) => {
-                // TODO
-                let fpga_time_us = 0; // verification_state.thread_h.take().unwrap().join().unwrap();
-
-                let mut verify_check_time = Measure::start("verify_check");
-                let hashes = verification_state.hashes.take().unwrap();
-                let hashes: Vec<Hash> = Arc::try_unwrap(hashes)
-                    .expect("unwrap Arc")
-                    .into_inner()
-                    .expect("into_inner");
-                let res = PAR_THREAD_POOL.with(|thread_pool| {
-                    thread_pool.borrow().install(|| {
-                        hashes
-                            .par_iter()
-                            .cloned()
-                            .zip(verification_state.verifications.take().unwrap().0)
-                            .all(|(hash, (action, expected))| {
-                                let actual = match action {
-                                    VerifyAction::Mixin(mixin) => {
-                                        Poh::new(hash, None).record(mixin).unwrap().hash
-                                    }
-                                    VerifyAction::Tick => Poh::new(hash, None).tick().unwrap().hash,
-                                    VerifyAction::None => hash,
-                                };
-                                actual == expected
-                            })
-                    })
-                });
-
-                verify_check_time.stop();
-                self.poh_duration_us += fpga_time_us + verify_check_time.as_us();
+                self.poh_duration_us += accel_time_us + verify_check_time.as_us();
 
                 self.verification_status = if res {
                     EntryVerificationStatus::Success
@@ -643,8 +638,8 @@ pub trait EntrySlice {
     fn start_verify(&self, start_hash: &Hash, recyclers: VerifyRecyclers)
         -> EntryVerificationState;
     fn verify(&self, start_hash: &Hash) -> bool;
-    fn start_verify_fpga(&self, fpga: &mut FpgaPerf, start_hash: &Hash) -> EntryVerificationState;
-    fn verify_fpga(&self, fpga: &mut FpgaPerf, start_hash: &Hash) -> bool;
+    fn start_verify_fpga(&self, start_hash: &Hash) -> EntryVerificationState;
+    fn verify_fpga(&self, start_hash: &Hash) -> bool;
     /// Checks that each entry tick has the correct number of hashes. Entry slices do not
     /// necessarily end in a tick, so `tick_hash_count` is used to carry over the hash count
     /// for the next entry slice.
@@ -659,8 +654,8 @@ impl EntrySlice for [Entry] {
             .finish_verify()
     }
 
-    fn verify_fpga(&self, fpga: &mut FpgaPerf, start_hash: &Hash) -> bool {
-        self.start_verify_fpga(fpga, start_hash).finish_verify()
+    fn verify_fpga(&self, start_hash: &Hash) -> bool {
+        self.start_verify_fpga(start_hash).finish_verify()
     }
 
     fn verify_cpu_generic(&self, start_hash: &Hash) -> EntryVerificationState {
@@ -891,10 +886,10 @@ impl EntrySlice for [Entry] {
             timing::duration_as_us(&gpu_wait.elapsed())
         });
 
-        let device_verification_data = DeviceVerificationData::Gpu(GpuVerificationData {
+        let device_verification_data = DeviceVerificationData::Accel(AccelVerificationData {
             thread_h: Some(verify_thread),
             verifications: Some(self.poh_verifications()),
-            hashes: Some(hashes),
+            hashes: Some(ArcAccelVec::Pinned(hashes)),
         });
         EntryVerificationState {
             verification_status: EntryVerificationStatus::Pending,
@@ -903,8 +898,13 @@ impl EntrySlice for [Entry] {
         }
     }
 
-    fn start_verify_fpga(&self, fpga: &mut FpgaPerf, start_hash: &Hash) -> EntryVerificationState {
+    fn start_verify_fpga(&self, start_hash: &Hash) -> EntryVerificationState {
         let start = Instant::now();
+        let api = solana_fpga::api();
+        if api.is_none() {
+            return self.verify_cpu(start_hash);
+        }
+        let api = api.unwrap();
         inc_new_counter_info!("entry_verify-num_entries", self.len() as usize);
 
         let genesis = [Entry {
@@ -919,6 +919,9 @@ impl EntrySlice for [Entry] {
         // alignment. The buffer contains packets (hash, n) where the n is the number of times the
         // SHA-256 hash function should be iterated over hash.
         let mut dma_buffer = DmaBuffer::new((HASH_BYTES + 8) * aligned_len);
+        let hashes = Arc::new(Mutex::new(Vec::with_capacity(self.len())));
+        let hashes_clone = hashes.clone();
+
         genesis
             .iter()
             .chain(self)
@@ -932,22 +935,30 @@ impl EntrySlice for [Entry] {
                     .extend_from_slice(&entry1.num_hashes.saturating_sub(1).to_le_bytes());
             });
 
-        fpga.poh_verify_many(&mut dma_buffer)
-            .expect("start_verify_fpga poh_verify_many");
-        assert_eq!(dma_buffer.as_slice().len(), aligned_len * HASH_BYTES);
+        let n_entries = self.len();
+        let verify_thread = thread::spawn(move || {
+            let mut hashes = hashes_clone.lock().unwrap();
+            let fpga_wait = Instant::now();
 
-        let mut hashes: Vec<Hash> = Vec::with_capacity(self.len());
-        for i in 0..self.len() {
-            hashes.push(Hash::new(
-                &dma_buffer.as_slice()[i * HASH_BYTES..(i + 1) * HASH_BYTES],
-            ));
-        }
+            api.poh_verify_many(&mut dma_buffer)
+                .expect("start_verify_fpga poh_verify_many");
+            inc_new_counter_info!(
+                "entry_verify-fpga_thread",
+                timing::duration_as_us(&fpga_wait.elapsed()) as usize
+            );
+            assert_eq!(dma_buffer.as_slice().len(), aligned_len * HASH_BYTES);
+            for i in 0..n_entries {
+                hashes.push(Hash::new(
+                    &dma_buffer.as_slice()[i * HASH_BYTES..(i + 1) * HASH_BYTES],
+                ));
+            }
+            timing::duration_as_us(&fpga_wait.elapsed())
+        });
 
-        let hashes = Some(Arc::new(Mutex::new(hashes)));
-
-        let device_verification_data = DeviceVerificationData::Fpga(FpgaVerificationData {
+        let device_verification_data = DeviceVerificationData::Accel(AccelVerificationData {
+            thread_h: Some(verify_thread),
             verifications: Some(self.poh_verifications()),
-            hashes,
+            hashes: Some(ArcAccelVec::Std(hashes)),
         });
         EntryVerificationState {
             verification_status: EntryVerificationStatus::Pending,

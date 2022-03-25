@@ -1,5 +1,7 @@
+use log::{error, info};
 use solana_sdk::hash::HASH_BYTES;
 use std::io::Error as IoError;
+use std::sync::Once;
 use warp_devices::{
     varium_c1100::VariumC1100,
     xdma::{Error as XdmaError, XdmaOps},
@@ -25,6 +27,8 @@ impl From<XdmaError> for Error {
     }
 }
 
+static mut API: Option<FpgaPerf> = None;
+
 /// FPGA performance interface.
 pub struct FpgaPerf {
     device: VariumC1100,
@@ -42,7 +46,7 @@ impl FpgaPerf {
     /// iterated over `hash`. `buf` should consist of a number of batches of 8 packets each for the
     /// purpose of alignment with the length of a demultiplexer round. The output from the
     /// accelerator is returned in `buf` and consists of the hashes computed for each input packet.
-    pub fn poh_verify_many(&mut self, buf: &mut DmaBuffer) -> Result<()> {
+    pub fn poh_verify_many(&self, buf: &mut DmaBuffer) -> Result<()> {
         let num_packets = buf.as_slice().len() / (HASH_BYTES + 8);
         // Check the packet batch alignment with the FPGA demultiplexer.
         assert_eq!(
@@ -54,4 +58,22 @@ impl FpgaPerf {
         self.device.dma_read(buf, 0)?;
         Ok(())
     }
+}
+
+pub fn init() {
+    static INIT_HOOK: Once = Once::new();
+
+    info!("Initializing FPGA API");
+    unsafe {
+        INIT_HOOK.call_once(|| {
+            API = Some(FpgaPerf::new().unwrap_or_else(|err| {
+                error!("Unable to initialize FPGA API: {:?}", err);
+                std::process::exit(1);
+            }));
+        })
+    }
+}
+
+pub fn api() -> Option<&'static FpgaPerf> {
+    unsafe { API.as_ref() }
 }
