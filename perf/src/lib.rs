@@ -50,6 +50,15 @@ pub fn report_target_features() {
         }
     );
 
+    info!(
+        "FPGA is {}abled",
+        if solana_fpga::api().is_some() {
+            "en"
+        } else {
+            "dis"
+        }
+    );
+
     // Validator binaries built on a machine with AVX support will generate invalid opcodes
     // when run on machines without AVX causing a non-obvious process abort.  Instead detect
     // the mismatch and error cleanly.

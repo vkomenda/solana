@@ -63,10 +63,10 @@ fn main() {
                 .help("Use cuda"),
         )
         .arg(
-            Arg::new("xilinx")
-                .long("xilinx")
+            Arg::new("fpga")
+                .long("fpga")
                 .takes_value(false)
-                .help("Use a Xilinx FPGA"),
+                .help("Use FPGA"),
         )
         .get_matches();
 
@@ -82,7 +82,7 @@ fn main() {
     if matches.is_present("cuda") {
         perf_libs::init_cuda();
     }
-    if matches.is_present("xilinx") {
+    if matches.is_present("fpga") {
         solana_fpga::init();
     }
     init_poh();
