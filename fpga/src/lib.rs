@@ -46,7 +46,7 @@ impl FpgaPerf {
     /// iterated over `hash`. `buf` should consist of a number of batches of 8 packets each for the
     /// purpose of alignment with the length of a demultiplexer round. The output from the
     /// accelerator is returned in `buf` and consists of the hashes computed for each input packet.
-    pub fn poh_verify_many(&self, buf: &mut DmaBuffer) -> Result<()> {
+    pub fn poh_verify_many(&self, hashes: &mut DmaBuffer, num_iters: &DmaBuffer, num_hashes: u32) -> Result<()> {
         let num_packets = buf.as_slice().len() / (HASH_BYTES + 8);
         // Check the packet batch alignment with the FPGA demultiplexer.
         assert_eq!(
