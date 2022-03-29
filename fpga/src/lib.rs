@@ -9,9 +9,7 @@ use warp_devices::{
 
 pub use warp_devices::xdma::DmaBuffer;
 
-/// The length of a round of the packet demultiplexer in the FPGA. The length of a packet batch
-/// should be a multiple of this number.
-pub const DEMUX_ROUND_LEN: usize = 8;
+const VARIUM_HBM_SIZE: u64 = 8 * 1024 * 1024 * 1024;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -19,6 +17,7 @@ pub type Result<T> = std::result::Result<T, Error>;
 pub enum Error {
     CannotCreateDevice(IoError),
     Xdma(XdmaError),
+    OutOfHbm,
 }
 
 impl From<XdmaError> for Error {
@@ -28,6 +27,12 @@ impl From<XdmaError> for Error {
 }
 
 static mut API: Option<FpgaPerf> = None;
+
+struct CardBaseAddrs {
+    in_hashes_base: u64,
+    num_iters_base: u64,
+    out_hashes_base: u64,
+}
 
 /// FPGA performance interface.
 pub struct FpgaPerf {
@@ -41,21 +46,51 @@ impl FpgaPerf {
         Ok(Self { device })
     }
 
-    /// Computes POH hashes for multiple starting hashes.  `buf` contains packets of the kind
-    /// `(hash, n)` where the `n` is the number of times the SHA-256 hash function should be
-    /// iterated over `hash`. `buf` should consist of a number of batches of 8 packets each for the
-    /// purpose of alignment with the length of a demultiplexer round. The output from the
-    /// accelerator is returned in `buf` and consists of the hashes computed for each input packet.
-    pub fn poh_verify_many(&self, hashes: &mut DmaBuffer, num_iters: &DmaBuffer, num_hashes: u32) -> Result<()> {
-        let num_packets = buf.as_slice().len() / (HASH_BYTES + 8);
-        // Check the packet batch alignment with the FPGA demultiplexer.
-        assert_eq!(
-            buf.as_slice().len() % ((HASH_BYTES + 8) * DEMUX_ROUND_LEN),
-            0
-        );
-        self.device.dma_write(buf, 0)?;
-        buf.get_mut().truncate(num_packets * HASH_BYTES);
-        self.device.dma_read(buf, 0)?;
+    /// Computes POH hashes for multiple starting hashes.  `hashes` contains input
+    /// hashes. `num_iters` contain the numbers of time the SHA-256 hash function should be iterated
+    /// over the hash with the same index in `hashes`. The output from the accelerator is returned
+    /// in `hashes` and consists of the hashes computed for each input hash.
+    pub fn poh_verify_many(&self, hashes: &mut DmaBuffer, num_iters: &DmaBuffer) -> Result<()> {
+        let num_hashes = hashes.as_slice().len() / HASH_BYTES;
+        // Check that `hashes` and `num_iters` have the same length.
+        assert_eq!(num_hashes, num_iters.as_slice().len() / 8);
+
+        let hashes_cap = hashes.get().capacity();
+        let num_iters_cap = num_iters.get().capacity();
+
+        if (hashes_cap + num_iters_cap) as u64 > VARIUM_HBM_SIZE {
+            return Err(Error::OutOfHbm);
+        }
+
+        // TODO: update to `get`
+        let base_addrs = self.init_kernel(hashes_cap, num_iters_cap)?;
+
+        // Write the inputs to the card.
+        self.device.dma_write(hashes, base_addrs.in_hashes_base)?;
+        self.device
+            .dma_write(num_iters, base_addrs.num_iters_base)?;
+
+        self.run_kernel()?;
+
+        // Read the results back.
+        self.device.dma_read(hashes, base_addrs.out_hashes_base)?;
+        Ok(())
+    }
+
+    fn init_kernel(
+        &self,
+        hashes_capacity: usize,
+        num_iters_capacity: usize,
+    ) -> Result<CardBaseAddrs> {
+        let base_addrs = CardBaseAddrs {
+            in_hashes_base: 0,
+            num_iters_base: hashes_capacity as u64,
+            out_hashes_base: (hashes_capacity + num_iters_capacity) as u64,
+        };
+        Ok(base_addrs)
+    }
+
+    fn run_kernel(&self) -> Result<()> {
         Ok(())
     }
 }
