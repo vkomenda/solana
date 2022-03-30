@@ -1,4 +1,7 @@
+mod poh_core;
+
 use log::{error, info};
+use poh_core::{DataBaseAddrs, Error as PohCoreError, PohCoreOps, PohCoreParam};
 use solana_sdk::hash::HASH_BYTES;
 use std::io::Error as IoError;
 use std::sync::Once;
@@ -18,6 +21,7 @@ pub enum Error {
     CannotCreateDevice(IoError),
     Xdma(XdmaError),
     OutOfHbm,
+    PohCore(PohCoreError),
 }
 
 impl From<XdmaError> for Error {
@@ -26,12 +30,16 @@ impl From<XdmaError> for Error {
     }
 }
 
+impl From<PohCoreError> for Error {
+    fn from(e: PohCoreError) -> Self {
+        Self::PohCore(e)
+    }
+}
+
 static mut API: Option<FpgaPerf> = None;
 
-struct CardBaseAddrs {
-    in_hashes_base: u64,
-    num_iters_base: u64,
-    out_hashes_base: u64,
+impl PohCoreParam for VariumC1100 {
+    const BASE_ADDR: u64 = 0x0005_0000;
 }
 
 /// FPGA performance interface.
@@ -62,35 +70,22 @@ impl FpgaPerf {
             return Err(Error::OutOfHbm);
         }
 
-        // TODO: update to `get`
-        let base_addrs = self.init_kernel(hashes_cap, num_iters_cap)?;
+        let base_addrs = DataBaseAddrs {
+            in_hashes_base: 0,
+            num_iters_base: hashes_cap as u64,
+            out_hashes_base: (hashes_cap + num_iters_cap) as u64,
+        };
+        self.device.init_poh(base_addrs, num_hashes as u32)?;
 
         // Write the inputs to the card.
         self.device.dma_write(hashes, base_addrs.in_hashes_base)?;
         self.device
             .dma_write(num_iters, base_addrs.num_iters_base)?;
 
-        self.run_kernel()?;
+        self.device.run_poh()?;
 
         // Read the results back.
         self.device.dma_read(hashes, base_addrs.out_hashes_base)?;
-        Ok(())
-    }
-
-    fn init_kernel(
-        &self,
-        hashes_capacity: usize,
-        num_iters_capacity: usize,
-    ) -> Result<CardBaseAddrs> {
-        let base_addrs = CardBaseAddrs {
-            in_hashes_base: 0,
-            num_iters_base: hashes_capacity as u64,
-            out_hashes_base: (hashes_capacity + num_iters_capacity) as u64,
-        };
-        Ok(base_addrs)
-    }
-
-    fn run_kernel(&self) -> Result<()> {
         Ok(())
     }
 }

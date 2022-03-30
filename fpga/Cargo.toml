@@ -9,9 +9,11 @@ homepage = "https://solana.com/"
 publish = false
 
 [dependencies]
+enum-iterator = "0.7"
+enum-iterator-derive = "0.7"
 log = "0.4.14"
 rand = "0.7.0"
 rayon = "1.5.1"
 solana-logger = { path = "../logger", version = "=1.11.0" }
 solana-sdk = { path = "../sdk", version = "=1.11.0" }
-warp-devices = { git = "https://github.com/Quarky93/warpshell.git", tag = "0.2.2" }
+warp-devices = { git = "https://github.com/Quarky93/warpshell.git", commit = "f716933" }
