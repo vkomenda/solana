@@ -11,7 +11,7 @@ use {
     rand::{thread_rng, Rng},
     rayon::{prelude::*, ThreadPool},
     serde::{Deserialize, Serialize},
-    solana_fpga::{DmaBuffer, DEMUX_ROUND_LEN},
+    solana_fpga::DmaBuffer,
     solana_measure::measure::Measure,
     solana_merkle_tree::MerkleTree,
     solana_metrics::*,
@@ -243,11 +243,13 @@ enum VerifyAction {
     None,
 }
 
+#[derive(Debug)]
 enum ArcAccelVec<T: Default + Clone + Sized> {
     Pinned(Arc<Mutex<PinnedVec<T>>>),
     Std(Arc<Mutex<Vec<T>>>),
 }
 
+#[derive(Debug)]
 enum AccelVec<T: Default + Clone + Sized> {
     Pinned(PinnedVec<T>),
     Std(Vec<T>),
@@ -385,6 +387,7 @@ impl EntryVerificationState {
                             .expect("into_inner"),
                     ),
                 };
+                println!("out_hashes {:?}", hashes);
                 let res = PAR_THREAD_POOL.with(|thread_pool| {
                     thread_pool.borrow().install(|| {
                         hashes
@@ -849,6 +852,8 @@ impl EntrySlice for [Entry] {
             .take(self.len())
             .collect();
 
+        println!("GPU in_hashes {:?}", hashes);
+
         let mut hashes_pinned = recyclers.hash_recycler.allocate("poh_verify_hash");
         hashes_pinned.set_pinnable();
         hashes_pinned.resize(hashes.len(), Hash::default());
@@ -913,44 +918,47 @@ impl EntrySlice for [Entry] {
             transactions: vec![],
         }];
 
-        // Length of payload padded to the size of AXI-Stream packet demultiplexer round capacity.
-        let aligned_len = ((self.len() + DEMUX_ROUND_LEN - 1) / DEMUX_ROUND_LEN) * DEMUX_ROUND_LEN;
-        // Allocate a buffer big enough for it not to get reallocated to keep the DMA page
-        // alignment. The buffer contains packets (hash, n) where the n is the number of times the
-        // SHA-256 hash function should be iterated over hash.
-        let mut dma_buffer = DmaBuffer::new((HASH_BYTES + 8) * aligned_len);
-        let hashes = Arc::new(Mutex::new(Vec::with_capacity(self.len())));
-        let hashes_clone = hashes.clone();
-
+        // Allocate a buffers big enough for it not to get reallocated to keep the DMA page
+        // alignment. The buffers contains hashes and nuimber of iterations of the hash function
+        // that have to be applied to those hashes.
+        let n_entries = self.len();
+        let mut hashes_buffer = DmaBuffer::new(HASH_BYTES * n_entries);
+        let mut num_iters_buffer = DmaBuffer::new(8 * n_entries);
         genesis
             .iter()
             .chain(self)
             .zip(self)
             .for_each(|(entry0, entry1)| {
-                dma_buffer
+                hashes_buffer
                     .get_mut()
                     .extend_from_slice(&entry0.hash.to_bytes());
-                dma_buffer
+                println!("{:?}", entry0.hash);
+                num_iters_buffer
                     .get_mut()
                     .extend_from_slice(&entry1.num_hashes.saturating_sub(1).to_le_bytes());
+                println!("{}", entry1.num_hashes.saturating_sub(1));
             });
+        let hashes = Arc::new(Mutex::new(Vec::with_capacity(self.len())));
+        let hashes_clone = hashes.clone();
 
-        let n_entries = self.len();
         let verify_thread = thread::spawn(move || {
             let mut hashes = hashes_clone.lock().unwrap();
             let fpga_wait = Instant::now();
 
-            api.poh_verify_many(&mut dma_buffer)
+            api.poh_verify_many(&mut hashes_buffer, &num_iters_buffer)
                 .expect("start_verify_fpga poh_verify_many");
             inc_new_counter_info!(
                 "entry_verify-fpga_thread",
                 timing::duration_as_us(&fpga_wait.elapsed()) as usize
             );
-            assert_eq!(dma_buffer.as_slice().len(), aligned_len * HASH_BYTES);
+            // Check that the length of the buffer didn't change.
+            assert_eq!(hashes_buffer.as_slice().len(), HASH_BYTES * n_entries);
+            println!("out_hashes:");
             for i in 0..n_entries {
-                hashes.push(Hash::new(
-                    &dma_buffer.as_slice()[i * HASH_BYTES..(i + 1) * HASH_BYTES],
-                ));
+                let hash =
+                    Hash::new(&hashes_buffer.as_slice()[i * HASH_BYTES..(i + 1) * HASH_BYTES]);
+                hashes.push(hash);
+                println!("{:?}", hash);
             }
             timing::duration_as_us(&fpga_wait.elapsed())
         });

@@ -3,11 +3,11 @@ use warp_devices::xdma::{Error as XdmaError, XdmaOps};
 
 #[repr(u32)]
 enum ControlRegBit {
-    Start = 0b0001,            // (Read/Write/COH)
-    Done = 0b0010,             // (Read/COR)
-    Idle = 0b0100,             // (Read)
-    Ready = 0b1000,            // (Read)
-    AutoRestart = 0x1000_0000, // (Read/Write)
+    Start = 0b0001, // (Read/Write/COH)
+    Done = 0b0010,  // (Read/COR)
+    Idle = 0b0100,  // (Read)
+                    // Ready = 0b1000,            // (Read)
+                    // AutoRestart = 0x1000_0000, // (Read/Write)
 }
 
 #[derive(Copy, Clone, Debug, IntoEnumIterator, PartialEq)]
@@ -54,7 +54,8 @@ pub struct DataBaseAddrs {
 pub trait PohCoreOps {
     /// Initialises the POH core.
     fn init_poh(&self, base_addrs: DataBaseAddrs, num_hashes: u32) -> Result<()>;
-    fn run_poh(&self) -> Result<u32>;
+    /// Starts computing the hashes and waits until the POH core reaches the DONE state.
+    fn run_poh(&self) -> Result<()>;
 }
 
 impl<T> PohCoreOps for T
@@ -108,7 +109,7 @@ where
         Ok(())
     }
 
-    fn run_poh(&self) -> Result<u32> {
+    fn run_poh(&self) -> Result<()> {
         let mut control_reg = 0;
         let mut control_bytes = [0u8; 4];
 
@@ -122,9 +123,6 @@ where
             control_reg = u32::from_le_bytes(control_bytes);
         }
 
-        // Read the output.
-        let mut output = [0u8; 4];
-        self.shell_read(&mut output, T::BASE_ADDR + 0x10)?;
-        Ok(u32::from_le_bytes(output))
+        Ok(())
     }
 }
