@@ -919,7 +919,7 @@ impl EntrySlice for [Entry] {
         }];
 
         // Allocate a buffers big enough for it not to get reallocated to keep the DMA page
-        // alignment. The buffers contains hashes and nuimber of iterations of the hash function
+        // alignment. The buffers contains hashes and numbers of iterations of the hash function
         // that have to be applied to those hashes.
         let n_entries = self.len();
         let mut hashes_buffer = DmaBuffer::new(HASH_BYTES * n_entries);
@@ -955,10 +955,9 @@ impl EntrySlice for [Entry] {
             assert_eq!(hashes_buffer.as_slice().len(), HASH_BYTES * n_entries);
             println!("out_hashes:");
             for i in 0..n_entries {
-                let hash =
-                    Hash::new(&hashes_buffer.as_slice()[i * HASH_BYTES..(i + 1) * HASH_BYTES]);
-                hashes.push(hash);
-                println!("{:?}", hash);
+                let hash = &hashes_buffer.as_slice()[i * HASH_BYTES..(i + 1) * HASH_BYTES];
+                hashes.push(Hash::new(hash));
+                println!("{:x?}", hash);
             }
             timing::duration_as_us(&fpga_wait.elapsed())
         });
