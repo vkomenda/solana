@@ -7073,7 +7073,7 @@ dependencies = [
 [[package]]
 name = "warp-devices"
 version = "0.2.2"
-source = "git+https://github.com/Quarky93/warpshell.git#f716933bda76a899a642b4cfdf06b73fa1c606a2"
+source = "git+https://github.com/Quarky93/warpshell.git?rev=f716933#f716933bda76a899a642b4cfdf06b73fa1c606a2"
 dependencies = [
  "enum-iterator",
  "enum-iterator-derive",

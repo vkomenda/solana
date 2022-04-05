@@ -75,7 +75,6 @@ impl FpgaPerf {
             num_iters_base: hashes_cap as u64,
             out_hashes_base: (hashes_cap + num_iters_cap) as u64,
         };
-        println!("{:?}", base_addrs);
         self.device.init_poh(base_addrs, num_hashes as u32)?;
 
         // Write the inputs to the card.
@@ -87,12 +86,8 @@ impl FpgaPerf {
         for b in hashes.get_mut() {
             *b = 0;
         }
-        println!("zeroed hashes {:?}", hashes.get());
 
         self.device.run_poh()?;
-
-        // Sleep additional time if `run_poh` returned too soon.
-        std::thread::sleep(std::time::Duration::from_secs(1));
 
         // Read the results back.
         self.device.dma_read(hashes, base_addrs.out_hashes_base)?;

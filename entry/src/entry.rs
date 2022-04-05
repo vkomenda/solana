@@ -387,7 +387,6 @@ impl EntryVerificationState {
                             .expect("into_inner"),
                     ),
                 };
-                println!("out_hashes {:?}", hashes);
                 let res = PAR_THREAD_POOL.with(|thread_pool| {
                     thread_pool.borrow().install(|| {
                         hashes
@@ -852,8 +851,6 @@ impl EntrySlice for [Entry] {
             .take(self.len())
             .collect();
 
-        println!("GPU in_hashes {:?}", hashes);
-
         let mut hashes_pinned = recyclers.hash_recycler.allocate("poh_verify_hash");
         hashes_pinned.set_pinnable();
         hashes_pinned.resize(hashes.len(), Hash::default());
@@ -932,11 +929,9 @@ impl EntrySlice for [Entry] {
                 hashes_buffer
                     .get_mut()
                     .extend_from_slice(&entry0.hash.to_bytes());
-                println!("{:?}", entry0.hash);
                 num_iters_buffer
                     .get_mut()
                     .extend_from_slice(&entry1.num_hashes.saturating_sub(1).to_le_bytes());
-                println!("{}", entry1.num_hashes.saturating_sub(1));
             });
         let hashes = Arc::new(Mutex::new(Vec::with_capacity(self.len())));
         let hashes_clone = hashes.clone();
@@ -953,11 +948,9 @@ impl EntrySlice for [Entry] {
             );
             // Check that the length of the buffer didn't change.
             assert_eq!(hashes_buffer.as_slice().len(), HASH_BYTES * n_entries);
-            println!("out_hashes:");
             for i in 0..n_entries {
                 let hash = &hashes_buffer.as_slice()[i * HASH_BYTES..(i + 1) * HASH_BYTES];
                 hashes.push(Hash::new(hash));
-                println!("{:x?}", hash);
             }
             timing::duration_as_us(&fpga_wait.elapsed())
         });
