@@ -13,6 +13,12 @@ use warp_devices::{
 pub use warp_devices::xdma::DmaBuffer;
 
 const VARIUM_HBM_SIZE: u64 = 8 * 1024 * 1024 * 1024;
+const VARIUM_HBM_BASE: u64 = 0;
+/// UltraRAM hashes section of 8 MB, enough for 262,144 hashes.
+const VARIUM_URAM_HASHES_BASE: u64 = 0x2_0000_0000;
+/// UltraRAM num_iters section of matching size.
+const VARIUM_URAM_NUM_ITERS_BASE: u64 = 0x2_0080_0000;
+const VARIUM_URAM_MAX_HASHES: usize = 262_144;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -21,6 +27,7 @@ pub enum Error {
     CannotCreateDevice(IoError),
     Xdma(XdmaError),
     OutOfHbm,
+    OutOfUltraRam,
     PohCore(PohCoreError),
 }
 
@@ -66,14 +73,28 @@ impl FpgaPerf {
         let hashes_cap = hashes.get().capacity();
         let num_iters_cap = num_iters.get().capacity();
 
-        if (hashes_cap + num_iters_cap) as u64 > VARIUM_HBM_SIZE {
-            return Err(Error::OutOfHbm);
-        }
-
-        let base_addrs = DataBaseAddrs {
-            in_hashes_base: 0,
-            num_iters_base: hashes_cap as u64,
-            out_hashes_base: (hashes_cap + num_iters_cap) as u64,
+        let base_addrs = if num_hashes <= VARIUM_URAM_MAX_HASHES {
+            if hashes_cap / HASH_BYTES > VARIUM_URAM_MAX_HASHES
+                || num_iters_cap / 8 > VARIUM_URAM_MAX_HASHES
+            {
+                return Err(Error::OutOfHbm);
+            }
+            // Use UltraRAM
+            DataBaseAddrs {
+                in_hashes_base: VARIUM_URAM_HASHES_BASE,
+                num_iters_base: VARIUM_URAM_NUM_ITERS_BASE,
+                out_hashes_base: VARIUM_URAM_HASHES_BASE,
+            }
+        } else {
+            // Use HBM
+            if (2 * hashes_cap + num_iters_cap) as u64 > VARIUM_HBM_SIZE {
+                return Err(Error::OutOfHbm);
+            }
+            DataBaseAddrs {
+                in_hashes_base: VARIUM_HBM_BASE,
+                num_iters_base: hashes_cap as u64,
+                out_hashes_base: (hashes_cap + num_iters_cap) as u64,
+            }
         };
         self.device.init_poh(base_addrs, num_hashes as u32)?;
 
@@ -81,11 +102,6 @@ impl FpgaPerf {
         self.device.dma_write(hashes, base_addrs.in_hashes_base)?;
         self.device
             .dma_write(num_iters, base_addrs.num_iters_base)?;
-
-        // DEBUG: zero the buffer to determine whether an HBM read has taken place.
-        for b in hashes.get_mut() {
-            *b = 0;
-        }
 
         self.device.run_poh()?;
 

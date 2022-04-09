@@ -16,4 +16,4 @@ rand = "0.7.0"
 rayon = "1.5.1"
 solana-logger = { path = "../logger", version = "=1.11.0" }
 solana-sdk = { path = "../sdk", version = "=1.11.0" }
-warp-devices = { git = "https://github.com/Quarky93/warpshell.git", rev = "f716933" }
+warp-devices = { git = "https://github.com/Quarky93/warpshell.git", rev = "a10713b65ad78058b5ec05038bba91ce08842f64" }
