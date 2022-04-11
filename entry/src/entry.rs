@@ -379,11 +379,7 @@ impl EntryVerificationState {
                                     .into_par_iter()
                                     .cloned()
                                     .chunks(32)
-                                    .map(|chunk| {
-                                        let mut hash = <[u8; HASH_BYTES]>::try_from(chunk).unwrap();
-                                        hash.reverse();
-                                        Hash::new(&hash)
-                                    })
+                                    .map(|chunk| Hash::new(chunk.as_slice()))
                                     .zip(verification_state.verifications.take().unwrap().0)
                                     .all(check)
                             }
@@ -911,9 +907,9 @@ impl EntrySlice for [Entry] {
             .chain(self)
             .zip(self)
             .for_each(|(entry0, entry1)| {
-                let mut rev_hash = entry0.hash.to_bytes();
-                rev_hash.reverse();
-                hashes_buffer.get_mut().extend_from_slice(&rev_hash);
+                hashes_buffer
+                    .get_mut()
+                    .extend_from_slice(&entry0.hash.to_bytes());
                 num_iters_buffer
                     .get_mut()
                     .extend_from_slice(&entry1.num_hashes.saturating_sub(1).to_le_bytes());
