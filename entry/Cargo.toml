@@ -19,6 +19,7 @@ log = "0.4.17"
 rand = "0.7.0"
 rayon = "1.5.3"
 serde = "1.0.144"
+solana-fpga = { path = "../fpga" }
 solana-measure = { path = "../measure", version = "=1.15.0" }
 solana-merkle-tree = { path = "../merkle-tree", version = "=1.15.0" }
 solana-metrics = { path = "../metrics", version = "=1.15.0" }

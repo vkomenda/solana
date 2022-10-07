@@ -62,6 +62,12 @@ fn main() {
                 .takes_value(false)
                 .help("Use cuda"),
         )
+        .arg(
+            Arg::new("fpga")
+                .long("fpga")
+                .takes_value(false)
+                .help("Use FPGA"),
+        )
         .get_matches();
 
     let max_num_entries: u64 = matches.value_of_t("max_num_entries").unwrap_or(64);
@@ -75,6 +81,9 @@ fn main() {
     let mut num_entries = start_num_entries as usize;
     if matches.is_present("cuda") {
         perf_libs::init_cuda();
+    }
+    if matches.is_present("fpga") {
+        solana_fpga::init();
     }
     init_poh();
     while num_entries <= max_num_entries as usize {
@@ -138,6 +147,21 @@ fn main() {
             time.stop();
             println!(
                 "{},gpu_cuda,{}",
+                num_entries,
+                time.as_us() / iterations as u64
+            );
+        }
+
+        if solana_fpga::api().is_some() {
+            let mut time = Measure::start("time");
+            for _ in 0..iterations {
+                assert!(ticks[..num_entries]
+                    .start_verify_fpga(&start_hash)
+                    .finish_verify());
+            }
+            time.stop();
+            println!(
+                "{},fpga_xilinx,{}",
                 num_entries,
                 time.as_us() / iterations as u64
             );

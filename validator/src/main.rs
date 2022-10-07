@@ -1113,6 +1113,12 @@ pub fn main() {
                 .help("Use CUDA"),
         )
         .arg(
+            Arg::with_name("fpga")
+                .long("fpga")
+                .takes_value(false)
+                .help("Use FPGA"),
+        )
+        .arg(
             clap::Arg::with_name("require_tower")
                 .long("require-tower")
                 .takes_value(false)
@@ -2342,6 +2348,11 @@ pub fn main() {
     if cuda {
         solana_perf::perf_libs::init_cuda();
         enable_recycler_warming();
+    }
+
+    let fpga = matches.is_present("fpga");
+    if fpga {
+        solana_fpga::init();
     }
 
     solana_core::validator::report_target_features();

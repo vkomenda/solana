@@ -2,6 +2,7 @@
 //! unique ID that is the hash of the Entry before it, plus the hash of the
 //! transactions within it. Entries cannot be reordered, and its field `num_hashes`
 //! represents an approximate amount of time since the last Entry was created.
+
 use {
     crate::poh::Poh,
     crossbeam_channel::{Receiver, Sender},
@@ -12,6 +13,7 @@ use {
     rand::{thread_rng, Rng},
     rayon::{prelude::*, ThreadPool},
     serde::{Deserialize, Serialize},
+    solana_fpga::DmaBuffer,
     solana_measure::measure::Measure,
     solana_merkle_tree::MerkleTree,
     solana_metrics::*,
@@ -24,7 +26,7 @@ use {
     },
     solana_rayon_threadlimit::get_max_thread_count,
     solana_sdk::{
-        hash::Hash,
+        hash::{Hash, HASH_BYTES},
         packet::Meta,
         timing,
         transaction::{
@@ -243,15 +245,21 @@ enum VerifyAction {
     None,
 }
 
-pub struct GpuVerificationData {
+#[derive(Debug)]
+enum ArcAccelVec<T: Default + Clone + Sized> {
+    Pinned(Arc<Mutex<PinnedVec<T>>>),
+    DmaBuffer(Arc<Mutex<DmaBuffer>>),
+}
+
+pub struct AccelVerificationData {
     thread_h: Option<JoinHandle<u64>>,
-    hashes: Option<Arc<Mutex<PinnedVec<Hash>>>>,
-    verifications: Option<Vec<(VerifyAction, Hash)>>,
+    hashes: Option<ArcAccelVec<Hash>>,
+    verifications: Option<PohVerifications>,
 }
 
 pub enum DeviceVerificationData {
     Cpu(),
-    Gpu(GpuVerificationData),
+    Accel(AccelVerificationData),
 }
 
 pub struct EntryVerificationState {
@@ -322,6 +330,8 @@ pub enum EntryVerificationStatus {
     Pending,
 }
 
+pub struct PohVerifications(Vec<(VerifyAction, Hash)>);
+
 impl EntryVerificationState {
     pub fn status(&self) -> EntryVerificationStatus {
         self.verification_status
@@ -333,33 +343,50 @@ impl EntryVerificationState {
 
     pub fn finish_verify(&mut self) -> bool {
         match &mut self.device_verification_data {
-            DeviceVerificationData::Gpu(verification_state) => {
-                let gpu_time_us = verification_state.thread_h.take().unwrap().join().unwrap();
+            DeviceVerificationData::Accel(verification_state) => {
+                let accel_time_us = verification_state.thread_h.take().unwrap().join().unwrap();
 
                 let mut verify_check_time = Measure::start("verify_check");
-                let hashes = verification_state.hashes.take().unwrap();
-                let hashes = Arc::try_unwrap(hashes)
-                    .expect("unwrap Arc")
-                    .into_inner()
-                    .expect("into_inner");
                 let res = PAR_THREAD_POOL.install(|| {
-                    hashes
-                        .into_par_iter()
-                        .cloned()
-                        .zip(verification_state.verifications.take().unwrap())
-                        .all(|(hash, (action, expected))| {
-                            let actual = match action {
-                                VerifyAction::Mixin(mixin) => {
-                                    Poh::new(hash, None).record(mixin).unwrap().hash
-                                }
-                                VerifyAction::Tick => Poh::new(hash, None).tick().unwrap().hash,
-                                VerifyAction::None => hash,
-                            };
-                            actual == expected
-                        })
+                    let check = |(hash, (action, expected))| {
+                        let actual = match action {
+                            VerifyAction::Mixin(mixin) => {
+                                Poh::new(hash, None).record(mixin).unwrap().hash
+                            }
+                            VerifyAction::Tick => Poh::new(hash, None).tick().unwrap().hash,
+                            VerifyAction::None => hash,
+                        };
+                        actual == expected
+                    };
+                    match verification_state.hashes.take().unwrap() {
+                        ArcAccelVec::Pinned(v) => {
+                            let hashes = Arc::try_unwrap(v)
+                                .expect("unwrap Arc")
+                                .into_inner()
+                                .expect("into_inner");
+                            hashes
+                                .into_par_iter()
+                                .cloned()
+                                .zip(verification_state.verifications.take().unwrap().0)
+                                .all(check)
+                        }
+                        ArcAccelVec::DmaBuffer(buf) => {
+                            let buf: DmaBuffer = Arc::try_unwrap(buf)
+                                .expect("unwrap Arc")
+                                .into_inner()
+                                .expect("into_inner");
+                            buf.as_slice()
+                                .into_par_iter()
+                                .cloned()
+                                .chunks(32)
+                                .map(|chunk| Hash::new(chunk.as_slice()))
+                                .zip(verification_state.verifications.take().unwrap().0)
+                                .all(check)
+                        }
+                    }
                 });
                 verify_check_time.stop();
-                self.poh_duration_us += gpu_time_us + verify_check_time.as_us();
+                self.poh_duration_us += accel_time_us + verify_check_time.as_us();
 
                 self.verification_status = if res {
                     EntryVerificationStatus::Success
@@ -576,9 +603,12 @@ pub trait EntrySlice {
     fn verify_cpu(&self, start_hash: &Hash) -> EntryVerificationState;
     fn verify_cpu_generic(&self, start_hash: &Hash) -> EntryVerificationState;
     fn verify_cpu_x86_simd(&self, start_hash: &Hash, simd_len: usize) -> EntryVerificationState;
+    fn poh_verifications(&self) -> PohVerifications;
     fn start_verify(&self, start_hash: &Hash, recyclers: VerifyRecyclers)
         -> EntryVerificationState;
     fn verify(&self, start_hash: &Hash) -> bool;
+    fn start_verify_fpga(&self, start_hash: &Hash) -> EntryVerificationState;
+    fn verify_fpga(&self, start_hash: &Hash) -> bool;
     /// Checks that each entry tick has the correct number of hashes. Entry slices do not
     /// necessarily end in a tick, so `tick_hash_count` is used to carry over the hash count
     /// for the next entry slice.
@@ -591,6 +621,10 @@ impl EntrySlice for [Entry] {
     fn verify(&self, start_hash: &Hash) -> bool {
         self.start_verify(start_hash, VerifyRecyclers::default())
             .finish_verify()
+    }
+
+    fn verify_fpga(&self, start_hash: &Hash) -> bool {
+        self.start_verify_fpga(start_hash).finish_verify()
     }
 
     fn verify_cpu_generic(&self, start_hash: &Hash) -> EntryVerificationState {
@@ -628,7 +662,6 @@ impl EntrySlice for [Entry] {
     }
 
     fn verify_cpu_x86_simd(&self, start_hash: &Hash, simd_len: usize) -> EntryVerificationState {
-        use solana_sdk::hash::HASH_BYTES;
         let now = Instant::now();
         let genesis = [Entry {
             num_hashes: 0,
@@ -730,6 +763,28 @@ impl EntrySlice for [Entry] {
         }
     }
 
+    fn poh_verifications(&self) -> PohVerifications {
+        PAR_THREAD_POOL.install(|| {
+            PohVerifications(
+                self.into_par_iter()
+                    .map(|entry| {
+                        let answer = entry.hash;
+                        let action = if entry.transactions.is_empty() {
+                            if entry.num_hashes == 0 {
+                                VerifyAction::None
+                            } else {
+                                VerifyAction::Tick
+                            }
+                        } else {
+                            VerifyAction::Mixin(hash_transactions(&entry.transactions))
+                        };
+                        (action, answer)
+                    })
+                    .collect::<Vec<(VerifyAction, Hash)>>(),
+            )
+        })
+    }
+
     fn start_verify(
         &self,
         start_hash: &Hash,
@@ -796,27 +851,79 @@ impl EntrySlice for [Entry] {
             })
             .unwrap();
 
-        let verifications = PAR_THREAD_POOL.install(|| {
-            self.into_par_iter()
-                .map(|entry| {
-                    let answer = entry.hash;
-                    let action = if entry.transactions.is_empty() {
-                        if entry.num_hashes == 0 {
-                            VerifyAction::None
-                        } else {
-                            VerifyAction::Tick
-                        }
-                    } else {
-                        VerifyAction::Mixin(hash_transactions(&entry.transactions))
-                    };
-                    (action, answer)
-                })
-                .collect()
+        let device_verification_data = DeviceVerificationData::Accel(AccelVerificationData {
+            thread_h: Some(verify_thread),
+            verifications: Some(self.poh_verifications()),
+            hashes: Some(ArcAccelVec::Pinned(hashes)),
         });
-        let device_verification_data = DeviceVerificationData::Gpu(GpuVerificationData {
-            thread_h: Some(gpu_verify_thread),
-            verifications: Some(verifications),
-            hashes: Some(hashes),
+        EntryVerificationState {
+            verification_status: EntryVerificationStatus::Pending,
+            poh_duration_us: timing::duration_as_us(&start.elapsed()),
+            device_verification_data,
+        }
+    }
+
+    fn start_verify_fpga(&self, start_hash: &Hash) -> EntryVerificationState {
+        let start = Instant::now();
+        let api = solana_fpga::api();
+        if api.is_none() {
+            return self.verify_cpu(start_hash);
+        }
+        let api = api.unwrap();
+        inc_new_counter_info!("entry_verify-num_entries", self.len() as usize);
+
+        let genesis = [Entry {
+            num_hashes: 0,
+            hash: *start_hash,
+            transactions: vec![],
+        }];
+
+        // Allocate a buffers big enough for it not to get reallocated to keep the DMA page
+        // alignment. The buffers contains hashes and numbers of iterations of the hash function
+        // that have to be applied to those hashes.
+        let n_entries = self.len();
+        let mut hashes_buffer = DmaBuffer::new(HASH_BYTES * n_entries);
+        let mut num_iters_buffer = DmaBuffer::new(8 * n_entries);
+        genesis
+            .iter()
+            .chain(self)
+            .zip(self)
+            .for_each(|(entry0, entry1)| {
+                hashes_buffer
+                    .get_mut()
+                    .extend_from_slice(&entry0.hash.to_bytes());
+                num_iters_buffer
+                    .get_mut()
+                    .extend_from_slice(&entry1.num_hashes.saturating_sub(1).to_le_bytes());
+            });
+        let hashes = Arc::new(Mutex::new(hashes_buffer));
+        let hashes_clone = hashes.clone();
+
+        let verify_thread = thread::Builder::new()
+            .name("solFpgaPohVerify".into())
+            .spawn(move || {
+                let mut hashes = hashes_clone.lock().unwrap();
+                let fpga_wait = Instant::now();
+
+                api.poh_verify_many(&mut hashes, &num_iters_buffer)
+                    .expect("start_verify_fpga poh_verify_many");
+                inc_new_counter_info!(
+                    "entry_verify-fpga_thread",
+                    timing::duration_as_us(&fpga_wait.elapsed()) as usize
+                );
+                // Check that the length of the buffer didn't change.
+                assert_eq!(hashes.as_slice().len(), HASH_BYTES * n_entries);
+                // for i in 0..n_entries {
+                //     let hash = &hashes_buffer.as_slice()[i * HASH_BYTES..(i + 1) * HASH_BYTES];
+                //     hashes.push(Hash::new(hash));
+                // }
+                timing::duration_as_us(&fpga_wait.elapsed())
+            });
+
+        let device_verification_data = DeviceVerificationData::Accel(AccelVerificationData {
+            thread_h: Some(verify_thread),
+            verifications: Some(self.poh_verifications()),
+            hashes: Some(ArcAccelVec::DmaBuffer(hashes)),
         });
         EntryVerificationState {
             verification_status: EntryVerificationStatus::Pending,
