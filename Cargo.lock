@@ -5174,12 +5174,11 @@ name = "solana-fpga"
 version = "0.1.0"
 dependencies = [
  "enum-iterator",
- "enum-iterator-derive",
  "log",
  "rand 0.7.3",
  "rayon",
- "solana-logger",
- "solana-sdk",
+ "solana-logger 1.15.0",
+ "solana-sdk 1.15.0",
  "warp-devices",
 ]
 
@@ -7914,11 +7913,11 @@ dependencies = [
 
 [[package]]
 name = "warp-devices"
-version = "0.2.3"
-source = "git+https://github.com/Quarky93/warpshell.git?rev=a10713b65ad78058b5ec05038bba91ce08842f64#a10713b65ad78058b5ec05038bba91ce08842f64"
+version = "0.3.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5eeb87c73e20aa459a481aabc38f40de970ec2a4286b09cd5a6047413754c9fe"
 dependencies = [
  "enum-iterator",
- "enum-iterator-derive",
  "log",
  "num_enum",
 ]

@@ -1,4 +1,4 @@
-use enum_iterator_derive::IntoEnumIterator;
+use enum_iterator::Sequence;
 use warp_devices::xdma::{Error as XdmaError, XdmaOps};
 
 #[repr(u32)]
@@ -10,7 +10,7 @@ enum ControlRegBit {
                     // AutoRestart = 0x1000_0000, // (Read/Write)
 }
 
-#[derive(Copy, Clone, Debug, IntoEnumIterator, PartialEq)]
+#[derive(Copy, Clone, Debug, Sequence, PartialEq)]
 #[repr(u64)]
 enum PohCoreReg {
     Control = 0,
