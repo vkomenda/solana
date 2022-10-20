@@ -882,21 +882,17 @@ impl EntrySlice for [Entry] {
         // alignment. The buffers contains hashes and numbers of iterations of the hash function
         // that have to be applied to those hashes.
         let n_entries = self.len();
-        let mut hashes_buffer = DmaBuffer::new(HASH_BYTES * n_entries);
-        let mut num_iters_buffer = DmaBuffer::new(8 * n_entries);
+        let mut hashes: Vec<Hash> = Vec::with_capacity(n_entries);
+        let mut num_iters: Vec<u64> = Vec::with_capacity(n_entries);
         genesis
             .iter()
             .chain(self)
             .zip(self)
             .for_each(|(entry0, entry1)| {
-                hashes_buffer
-                    .get_mut()
-                    .extend_from_slice(&entry0.hash.to_bytes());
-                num_iters_buffer
-                    .get_mut()
-                    .extend_from_slice(&entry1.num_hashes.saturating_sub(1).to_le_bytes());
+                hashes.push(entry0.hash);
+                num_iters.push(entry1.num_hashes.saturating_sub(1));
             });
-        let hashes = Arc::new(Mutex::new(hashes_buffer));
+        let hashes = Arc::new(Mutex::new(hashes));
         let hashes_clone = hashes.clone();
 
         let verify_thread = thread::Builder::new()
@@ -905,14 +901,14 @@ impl EntrySlice for [Entry] {
                 let mut hashes = hashes_clone.lock().unwrap();
                 let fpga_wait = Instant::now();
 
-                api.poh_verify_many(&mut hashes, &num_iters_buffer)
+                api.poh_verify_many(&mut hashes, &num_iters)
                     .expect("start_verify_fpga poh_verify_many");
                 inc_new_counter_info!(
                     "entry_verify-fpga_thread",
                     timing::duration_as_us(&fpga_wait.elapsed()) as usize
                 );
                 // Check that the length of the buffer didn't change.
-                assert_eq!(hashes.as_slice().len(), HASH_BYTES * n_entries);
+                assert_eq!(hashes.len(), HASH_BYTES * n_entries);
                 // for i in 0..n_entries {
                 //     let hash = &hashes_buffer.as_slice()[i * HASH_BYTES..(i + 1) * HASH_BYTES];
                 //     hashes.push(Hash::new(hash));
