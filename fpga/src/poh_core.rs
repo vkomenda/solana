@@ -44,6 +44,7 @@ impl From<XdmaError> for Error {
     }
 }
 
+/// Base addresses of memories and memory-mapped register interfaces of a PoH core.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct PohCoreBaseAddrs {
     pub shell_base: u64,
@@ -51,7 +52,7 @@ pub struct PohCoreBaseAddrs {
     pub uram_num_iters_base: u64,
 }
 
-/// PoH (Vitis HLS) core
+/// PoH (Vitis HLS) core.
 pub struct PohCore {
     pub device: &'static VariumC1100,
     pub base_addrs: PohCoreBaseAddrs,
@@ -69,13 +70,11 @@ impl XdmaOps for PohCore {
     }
 
     fn dma_read(&self, buf: &mut DmaBuffer, offset: u64) -> XdmaResult<()> {
-        self.device
-            .dma_read(buf, self.base_addrs.shell_base + offset)
+        self.device.dma_read(buf, offset)
     }
 
     fn dma_write(&self, buf: &DmaBuffer, offset: u64) -> XdmaResult<()> {
-        self.device
-            .dma_write(buf, self.base_addrs.shell_base + offset)
+        self.device.dma_write(buf, offset)
     }
 }
 
@@ -123,6 +122,24 @@ impl PohCore {
             control_reg = u32::from_le_bytes(control_bytes);
         }
 
+        Ok(())
+    }
+
+    pub fn write_hashes(&self, hashes_buf: &DmaBuffer) -> Result<()> {
+        self.device
+            .dma_write(hashes_buf, self.base_addrs.uram_hashes_base)?;
+        Ok(())
+    }
+
+    pub fn write_num_iters(&self, num_iters_buf: &DmaBuffer) -> Result<()> {
+        self.device
+            .dma_write(num_iters_buf, self.base_addrs.uram_num_iters_base)?;
+        Ok(())
+    }
+
+    pub fn read_hashes(&self, hashes_buf: &mut DmaBuffer) -> Result<()> {
+        self.device
+            .dma_read(hashes_buf, self.base_addrs.uram_hashes_base)?;
         Ok(())
     }
 }
