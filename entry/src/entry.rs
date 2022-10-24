@@ -13,7 +13,6 @@ use {
     rand::{thread_rng, Rng},
     rayon::{prelude::*, ThreadPool},
     serde::{Deserialize, Serialize},
-    solana_fpga::DmaBuffer,
     solana_measure::measure::Measure,
     solana_merkle_tree::MerkleTree,
     solana_metrics::*,
@@ -248,7 +247,7 @@ enum VerifyAction {
 #[derive(Debug)]
 enum ArcAccelVec<T: Default + Clone + Sized> {
     Pinned(Arc<Mutex<PinnedVec<T>>>),
-    DmaBuffer(Arc<Mutex<DmaBuffer>>),
+    Vec(Arc<Mutex<Vec<T>>>),
 }
 
 pub struct AccelVerificationData {
@@ -370,16 +369,13 @@ impl EntryVerificationState {
                                 .zip(verification_state.verifications.take().unwrap().0)
                                 .all(check)
                         }
-                        ArcAccelVec::DmaBuffer(buf) => {
-                            let buf: DmaBuffer = Arc::try_unwrap(buf)
+                        ArcAccelVec::Vec(v) => {
+                            let hashes = Arc::try_unwrap(v)
                                 .expect("unwrap Arc")
                                 .into_inner()
                                 .expect("into_inner");
-                            buf.as_slice()
+                            hashes
                                 .into_par_iter()
-                                .cloned()
-                                .chunks(32)
-                                .map(|chunk| Hash::new(chunk.as_slice()))
                                 .zip(verification_state.verifications.take().unwrap().0)
                                 .all(check)
                         }
@@ -852,7 +848,7 @@ impl EntrySlice for [Entry] {
             .unwrap();
 
         let device_verification_data = DeviceVerificationData::Accel(AccelVerificationData {
-            thread_h: Some(verify_thread),
+            thread_h: Some(gpu_verify_thread),
             verifications: Some(self.poh_verifications()),
             hashes: Some(ArcAccelVec::Pinned(hashes)),
         });
@@ -878,9 +874,6 @@ impl EntrySlice for [Entry] {
             transactions: vec![],
         }];
 
-        // Allocate a buffers big enough for it not to get reallocated to keep the DMA page
-        // alignment. The buffers contains hashes and numbers of iterations of the hash function
-        // that have to be applied to those hashes.
         let n_entries = self.len();
         let mut hashes: Vec<Hash> = Vec::with_capacity(n_entries);
         let mut num_iters: Vec<u64> = Vec::with_capacity(n_entries);
@@ -907,19 +900,14 @@ impl EntrySlice for [Entry] {
                     "entry_verify-fpga_thread",
                     timing::duration_as_us(&fpga_wait.elapsed()) as usize
                 );
-                // Check that the length of the buffer didn't change.
-                assert_eq!(hashes.len(), HASH_BYTES * n_entries);
-                // for i in 0..n_entries {
-                //     let hash = &hashes_buffer.as_slice()[i * HASH_BYTES..(i + 1) * HASH_BYTES];
-                //     hashes.push(Hash::new(hash));
-                // }
                 timing::duration_as_us(&fpga_wait.elapsed())
-            });
+            })
+            .unwrap();
 
         let device_verification_data = DeviceVerificationData::Accel(AccelVerificationData {
             thread_h: Some(verify_thread),
             verifications: Some(self.poh_verifications()),
-            hashes: Some(ArcAccelVec::DmaBuffer(hashes)),
+            hashes: Some(ArcAccelVec::Vec(hashes)),
         });
         EntryVerificationState {
             verification_status: EntryVerificationStatus::Pending,
