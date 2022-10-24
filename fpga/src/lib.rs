@@ -5,10 +5,7 @@ use poh_core::{Error as PohCoreError, PohCore, PohCoreBaseAddrs};
 use solana_sdk::hash::{Hash, HASH_BYTES};
 use std::iter;
 use std::sync::Once;
-use warp_devices::{
-    varium_c1100::VariumC1100,
-    xdma::{Error as XdmaError, XdmaOps},
-};
+use warp_devices::{varium_c1100::VariumC1100, xdma::Error as XdmaError};
 
 pub use warp_devices::xdma::DmaBuffer;
 
@@ -45,39 +42,49 @@ impl From<PohCoreError> for Error {
 static mut API: Option<FpgaPerf> = None;
 static mut FPGA_DEVICE: Option<VariumC1100> = None;
 
+#[derive(Debug)]
+struct FpgaPerfBuffer {
+    hashes_buf: DmaBuffer,
+    num_iters_buf: DmaBuffer,
+    len: usize,
+}
+
+impl FpgaPerfBuffer {
+    fn new(len: usize) -> Self {
+        Self {
+            hashes_buf: DmaBuffer::new(len * 32),
+            num_iters_buf: DmaBuffer::new(len * 8),
+            len,
+        }
+    }
+}
+
+#[derive(Debug)]
 struct FpgaPerfBuffers {
-    dma_buffers: Vec<(DmaBuffer, DmaBuffer)>,
-    per_core_sizes: Vec<usize>,
+    dma_bufs: Vec<FpgaPerfBuffer>,
 }
 
 impl FpgaPerfBuffers {
-    fn new(per_core_sizes: Vec<usize>) -> Self {
-        let dma_buffers = per_core_sizes
-            .iter()
-            .map(|size| (DmaBuffer::new(size * 32), DmaBuffer::new(size * 8)))
-            .collect();
-        Self {
-            dma_buffers,
-            per_core_sizes,
-        }
+    fn new(per_core_lens: Vec<usize>) -> Self {
+        let dma_bufs = per_core_lens.into_iter().map(FpgaPerfBuffer::new).collect();
+        Self { dma_bufs }
     }
 
     /// Copies the input hashes and numbers of iterations to the input buffers. All arguments should be
     /// correctly initialized before caling this function.
     fn buffer_inputs(&mut self, hashes: &[Hash], num_iters: &[u64]) {
         let mut offset = 0;
-        for ((hashes_buf, num_iters_buf), size) in
-            self.dma_buffers.iter_mut().zip(&self.per_core_sizes)
-        {
-            for hash in &hashes[offset..offset + size] {
-                hashes_buf.get_mut().extend_from_slice(&hash.to_bytes())
-            }
-            for num_iters in &num_iters[offset..offset + size] {
-                num_iters_buf
+        for buf in &mut self.dma_bufs {
+            for i in 0..buf.len {
+                let offset_i = offset + i;
+                buf.hashes_buf
                     .get_mut()
-                    .extend_from_slice(&num_iters.to_le_bytes())
+                    .extend_from_slice(&hashes[offset_i].to_bytes());
+                buf.num_iters_buf
+                    .get_mut()
+                    .extend_from_slice(&num_iters[offset_i].to_le_bytes());
             }
-            offset += size;
+            offset += buf.len;
         }
     }
 
@@ -86,14 +93,13 @@ impl FpgaPerfBuffers {
     fn unbuffer_outputs(&self, hashes: &mut [Hash]) {
         let mut offset = 0;
         let mut result_buf: [u8; 32] = [0; 32];
-        for ((hashes_buf, _), size) in self.dma_buffers.iter().zip(&self.per_core_sizes) {
-            for (i, hash) in hashes[offset..offset + size].iter_mut().enumerate() {
-                let start_addr = offset + i;
-                result_buf
-                    .copy_from_slice(&hashes_buf.get()[start_addr * 32..(start_addr + 1) * 32]);
-                *hash = Hash::new_from_array(result_buf);
+        for buf in &self.dma_bufs {
+            for i in 0..buf.len {
+                let offset_i = offset + i;
+                result_buf.copy_from_slice(&buf.hashes_buf.get()[i * 32..(i + 1) * 32]);
+                hashes[offset_i] = Hash::new_from_array(result_buf);
             }
-            offset += size;
+            offset += buf.len;
         }
     }
 }
@@ -126,20 +132,19 @@ impl FpgaPerf {
             return Err(Error::OutOfUltraRam);
         }
 
-        let per_core_sizes: Vec<usize> = per_core_sizes(num_hashes).collect();
+        let per_core_lens: Vec<usize> = per_core_lens(num_hashes).collect();
 
-        for (core, size) in self.cores.iter().zip(&per_core_sizes) {
-            core.init(*size as u32)?;
+        for (core, len) in self.cores.iter().zip(&per_core_lens) {
+            core.init(*len as u32)?;
         }
 
-        let mut buffers = FpgaPerfBuffers::new(per_core_sizes);
-
+        let mut buffers = FpgaPerfBuffers::new(per_core_lens);
         buffers.buffer_inputs(hashes, num_iters);
 
         // Write the inputs to the card.
-        for ((hashes_buf, num_iters_buf), core) in buffers.dma_buffers.iter().zip(&self.cores) {
-            core.write_hashes(&hashes_buf)?;
-            core.write_num_iters(&num_iters_buf)?;
+        for (buf, core) in buffers.dma_bufs.iter().zip(&self.cores) {
+            core.write_hashes(&buf.hashes_buf)?;
+            core.write_num_iters(&buf.num_iters_buf)?;
         }
 
         for core in &self.cores {
@@ -152,8 +157,8 @@ impl FpgaPerf {
 
         // Read the results back.
         // TODO: asynchronous reads
-        for ((hashes_buf, _), core) in buffers.dma_buffers.iter_mut().zip(&self.cores) {
-            core.read_hashes(hashes_buf)?;
+        for (buf, core) in buffers.dma_bufs.iter_mut().zip(&self.cores) {
+            core.read_hashes(&mut buf.hashes_buf)?;
         }
 
         // Copy the results from the buffer back to the input slice.
@@ -176,7 +181,7 @@ fn poh_core_base_addrs() -> impl Iterator<Item = PohCoreBaseAddrs> {
 
 /// Computes the numbers of hashes to be processed by each core. Core 0 will additionally process
 /// the remainder of hashes after the division into `NUM_POH_CORES`.
-fn per_core_sizes(num_hashes: usize) -> impl Iterator<Item = usize> {
+fn per_core_lens(num_hashes: usize) -> impl Iterator<Item = usize> {
     let (num_hashes_per_core, rem_hashes_per_core) =
         ((num_hashes / NUM_POH_CORES), (num_hashes % NUM_POH_CORES));
     iter::once(num_hashes_per_core + rem_hashes_per_core)
@@ -244,31 +249,32 @@ mod tests {
     }
 
     #[test]
-    fn per_core_sizes_are_correct() {
-        assert_eq!(per_core_sizes(0).collect::<Vec<_>>(), vec![0, 0, 0, 0]);
-        assert_eq!(per_core_sizes(1).collect::<Vec<_>>(), vec![1, 0, 0, 0]);
-        assert_eq!(per_core_sizes(10).collect::<Vec<_>>(), vec![4, 2, 2, 2]);
+    fn per_core_lens_are_correct() {
+        assert_eq!(per_core_lens(0).collect::<Vec<_>>(), vec![0, 0, 0, 0]);
+        assert_eq!(per_core_lens(1).collect::<Vec<_>>(), vec![1, 0, 0, 0]);
+        assert_eq!(per_core_lens(10).collect::<Vec<_>>(), vec![4, 2, 2, 2]);
+        assert_eq!(per_core_lens(201).collect::<Vec<_>>(), vec![51, 50, 50, 50]);
         assert_eq!(
-            per_core_sizes(201).collect::<Vec<_>>(),
-            vec![51, 50, 50, 50]
-        );
-        assert_eq!(
-            per_core_sizes(100_003).collect::<Vec<_>>(),
+            per_core_lens(100_003).collect::<Vec<_>>(),
             vec![25_003, 25_000, 25_000, 25_000]
         );
     }
 
     #[test]
     fn buffer_unbuffer() {
-        let per_core_sizes = vec![2, 1, 1, 1];
-        let expected_outputs: Vec<_> = iter::repeat_with(Hash::new_unique).take(5).collect();
+        const NUM_HASHES: usize = 5;
+        let per_core_lens = per_core_lens(NUM_HASHES).collect();
+        let expected_outputs: Vec<_> = iter::repeat_with(Hash::new_unique)
+            .take(NUM_HASHES)
+            .collect();
         let input_hashes = expected_outputs.clone();
-        let mut output_hashes: Vec<_> = iter::repeat_with(Hash::new_unique).take(5).collect();
-        let num_iters: Vec<_> = iter::repeat(0).take(5).collect();
-        let mut buffers = FpgaPerfBuffers::new(per_core_sizes);
+        let mut output_hashes: Vec<_> = iter::repeat_with(Hash::new_unique)
+            .take(NUM_HASHES)
+            .collect();
+        let num_iters: Vec<_> = (0..NUM_HASHES as u64).collect();
+        let mut buffers = FpgaPerfBuffers::new(per_core_lens);
 
         buffers.buffer_inputs(&input_hashes, &num_iters);
-        println!("{:?}", buffers.dma_buffers);
         buffers.unbuffer_outputs(&mut output_hashes);
 
         assert_eq!(output_hashes, expected_outputs);
