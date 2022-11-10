@@ -48,8 +48,8 @@ impl From<XdmaError> for Error {
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct PohCoreBaseAddrs {
     pub shell_base: u64,
-    pub uram_hashes_base: u64,
-    pub uram_num_iters_base: u64,
+    pub hashes_base: u64,
+    pub num_iters_base: u64,
 }
 
 /// PoH (Vitis HLS) core.
@@ -60,8 +60,10 @@ pub struct PohCore {
 
 impl XdmaOps for PohCore {
     fn shell_read(&self, buf: &mut [u8], offset: u64) -> XdmaResult<()> {
-        self.device
-            .shell_read(buf, self.base_addrs.shell_base + offset)
+        let addr = self.base_addrs.shell_base + offset;
+        self.device.shell_read(buf, addr)?;
+        println!("@0x{:x} = {:02x?}", addr, buf);
+        Ok(())
     }
 
     fn shell_write(&self, buf: &[u8], offset: u64) -> XdmaResult<()> {
@@ -80,27 +82,29 @@ impl XdmaOps for PohCore {
 
 impl PohCore {
     pub fn init(&self, num_hashes: u32) -> Result<()> {
+        println!("init");
         let mut control_reg = 0;
         let mut control_bytes = [0u8; 4];
 
         // Wait for IDLE.
-        while control_reg & ControlRegBit::Idle as u32 != ControlRegBit::Idle as u32 {
+        //        while control_reg & ControlRegBit::Idle as u32 != ControlRegBit::Idle as u32 {
+        for n_reg in 0..16 {
+            self.shell_read(&mut control_bytes, n_reg << 2)?;
             self.shell_read(&mut control_bytes, 0)?;
             control_reg = u32::from_le_bytes(control_bytes);
         }
 
-        // Write the inputs.
-        let in_hashes_bytes = self.base_addrs.uram_hashes_base.to_le_bytes();
+        // // Write the inputs.
+        let in_hashes_bytes = self.base_addrs.hashes_base.to_le_bytes();
         self.shell_write(&in_hashes_bytes[0..4], PohCoreReg::InHashesLow as u64)?;
         self.shell_write(&in_hashes_bytes[4..8], PohCoreReg::InHashesHigh as u64)?;
-        let num_iters_bytes = self.base_addrs.uram_num_iters_base.to_le_bytes();
+        let num_iters_bytes = self.base_addrs.num_iters_base.to_le_bytes();
         self.shell_write(&num_iters_bytes[0..4], PohCoreReg::NumItersLow as u64)?;
         self.shell_write(&num_iters_bytes[4..8], PohCoreReg::NumItersHigh as u64)?;
         let num_hashes_bytes = num_hashes.to_le_bytes();
         self.shell_write(&num_hashes_bytes, PohCoreReg::NumHashes as u64)?;
-        let out_hashes_bytes = in_hashes_bytes;
-        self.shell_write(&out_hashes_bytes[0..4], PohCoreReg::OutHashesLow as u64)?;
-        self.shell_write(&out_hashes_bytes[4..8], PohCoreReg::OutHashesHigh as u64)?;
+        self.shell_write(&in_hashes_bytes[0..4], PohCoreReg::OutHashesLow as u64)?;
+        self.shell_write(&in_hashes_bytes[4..8], PohCoreReg::OutHashesHigh as u64)?;
 
         Ok(())
     }
@@ -127,19 +131,19 @@ impl PohCore {
 
     pub fn write_hashes(&self, hashes_buf: &DmaBuffer) -> Result<()> {
         self.device
-            .dma_write(hashes_buf, self.base_addrs.uram_hashes_base)?;
+            .dma_write(hashes_buf, self.base_addrs.hashes_base)?;
         Ok(())
     }
 
     pub fn write_num_iters(&self, num_iters_buf: &DmaBuffer) -> Result<()> {
         self.device
-            .dma_write(num_iters_buf, self.base_addrs.uram_num_iters_base)?;
+            .dma_write(num_iters_buf, self.base_addrs.num_iters_base)?;
         Ok(())
     }
 
     pub fn read_hashes(&self, hashes_buf: &mut DmaBuffer) -> Result<()> {
         self.device
-            .dma_read(hashes_buf, self.base_addrs.uram_hashes_base)?;
+            .dma_read(hashes_buf, self.base_addrs.hashes_base)?;
         Ok(())
     }
 }
