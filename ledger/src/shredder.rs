@@ -4,7 +4,7 @@ use {
     },
     lazy_lru::LruCache,
     rayon::ThreadPool,
-    reed_solomon_erasure::{galois_8::ReedSolomon, Error::TooFewDataShards},
+    rse_aes::{Error::TooFewDataShards, ReedSolomon},
     solana_clock::Slot,
     solana_entry::entry::Entry,
     solana_hash::Hash,
@@ -32,7 +32,7 @@ type LruCacheOnce<K, V> = RwLock<LruCache<K, Arc<OnceLock<V>>>>;
 pub struct ReedSolomonCache(
     LruCacheOnce<
         (usize, usize), // number of {data,parity} shards
-        Result<Arc<ReedSolomon>, reed_solomon_erasure::Error>,
+        Result<Arc<ReedSolomon>, rse_aes::Error>,
     >,
 );
 
@@ -222,7 +222,7 @@ impl ReedSolomonCache {
         &self,
         data_shards: usize,
         parity_shards: usize,
-    ) -> Result<Arc<ReedSolomon>, reed_solomon_erasure::Error> {
+    ) -> Result<Arc<ReedSolomon>, rse_aes::Error> {
         let key = (data_shards, parity_shards);
         // Read from the cache with a shared lock.
         let entry = self.0.read().unwrap().get(&key).cloned();

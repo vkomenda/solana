@@ -57,7 +57,7 @@ rand0-8-5 = { package = "rand", version = "0.8.5" }
 rand_chacha = { workspace = true }
 rand_chacha0-3-1 = { package = "rand_chacha", version = "0.3.1" }
 rayon = { workspace = true }
-reed-solomon-erasure = { workspace = true, features = ["simd-accel"] }
+rse-aes = { workspace = true }
 scopeguard = { workspace = true }
 serde = { workspace = true }
 serde_bytes = { workspace = true }

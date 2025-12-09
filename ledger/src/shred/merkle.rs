@@ -22,7 +22,7 @@ use {
     assert_matches::debug_assert_matches,
     itertools::{Either, Itertools},
     rayon::{prelude::*, ThreadPool},
-    reed_solomon_erasure::Error::{InvalidIndex, TooFewParityShards},
+    rse_aes::Error::TooFewParityShards,
     solana_clock::Slot,
     solana_hash::Hash,
     solana_keypair::Keypair,
@@ -688,7 +688,7 @@ pub(super) fn recover(
         let position = u32::from(shred.coding_header.position);
         let index = shred.common_header.index.checked_sub(position);
         let common_header = ShredCommonHeader {
-            index: index.ok_or(Error::from(InvalidIndex))?,
+            index: index.ok_or(Error::InvalidIndex)?,
             ..shred.common_header
         };
         let coding_header = CodingShredHeader {
@@ -779,7 +779,7 @@ pub(super) fn recover(
             }
             let erasure_shard_index = shred.erasure_shard_index()?;
             if !(batch.len()..num_shards).contains(&erasure_shard_index) {
-                return Err(Error::from(InvalidIndex));
+                return Err(Error::InvalidIndex);
             }
             // Push stub shreds as placeholder for the missing shreds in
             // between.
@@ -901,7 +901,7 @@ fn make_stub_shred(
 ) -> Result<Shred, Error> {
     let num_data_shreds = usize::from(coding_header.num_data_shreds);
     let mut shred = if let Some(position) = erasure_shard_index.checked_sub(num_data_shreds) {
-        let position = u16::try_from(position).map_err(|_| Error::from(InvalidIndex))?;
+        let position = u16::try_from(position).map_err(|_| Error::InvalidIndex)?;
         let common_header = ShredCommonHeader {
             index: common_header.index + u32::from(position),
             ..*common_header
@@ -931,7 +931,7 @@ fn make_stub_shred(
             resigned: retransmitter_signature.is_some(),
         };
         let index = common_header.fec_set_index
-            + u32::try_from(erasure_shard_index).map_err(|_| InvalidIndex)?;
+            + u32::try_from(erasure_shard_index).map_err(|_| Error::InvalidIndex)?;
         let common_header = ShredCommonHeader {
             shred_variant,
             index,
@@ -1342,7 +1342,7 @@ mod test {
         itertools::Itertools,
         rand::{seq::SliceRandom, CryptoRng, Rng},
         rayon::ThreadPoolBuilder,
-        reed_solomon_erasure::Error::TooFewShardsPresent,
+        rse_aes::Error::TooFewShardsPresent,
         solana_keypair::Keypair,
         solana_packet::PACKET_DATA_SIZE,
         solana_signer::Signer,

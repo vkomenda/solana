@@ -169,7 +169,7 @@ pub enum Error {
     #[error(transparent)]
     WincodeWrite(#[from] wincode::WriteError),
     #[error(transparent)]
-    Erasure(#[from] reed_solomon_erasure::Error),
+    Erasure(#[from] rse_aes::Error),
     #[error("Invalid data size: {size}, payload: {payload}")]
     InvalidDataSize { size: u16, payload: usize },
     #[error("Invalid deshred set")]
@@ -212,6 +212,8 @@ pub enum Error {
     UnknownProofSize,
     #[error("Empty shreds list")]
     EmptyIterator,
+    #[error("Invalid shred index")]
+    InvalidIndex,
 }
 
 #[repr(u8)]
