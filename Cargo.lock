@@ -11097,7 +11097,7 @@ name = "solana-svm-test-harness"
 version = "4.0.0-alpha.0"
 dependencies = [
  "agave-logger",
- "clap 4.5.31",
+ "clap 4.5.53",
  "prost",
  "solana-svm-test-harness-fixture",
  "solana-svm-test-harness-instr",
@@ -11129,7 +11129,6 @@ dependencies = [
  "agave-precompiles",
  "agave-syscalls",
  "bincode",
- "clap 4.5.53",
  "prost",
  "solana-account",
  "solana-builtins",
