@@ -3,9 +3,12 @@ mod poh_core;
 use log::{error, info};
 use poh_core::{Error as PohCoreError, PohCore, PohCoreBaseAddrs};
 use solana_sdk::hash::Hash;
+use std::iter;
 use std::sync::Once;
-use std::{iter, time::Duration};
-use warp_devices::{varium_c1100::VariumC1100, xdma::Error as XdmaError};
+use warp_devices::{
+    varium_c1100::VariumC1100,
+    xdma::{Error as XdmaError, XdmaOps},
+};
 
 pub use warp_devices::xdma::DmaBuffer;
 
@@ -20,6 +23,7 @@ const VARIUM_HBM_MAX_HASHES: usize = 16 * VARIUM_HBM_BANK_SIZE as usize / 32;
 // const VARIUM_URAM_MAX_HASHES: usize = NUM_POH_CORES * VARIUM_URAM_MAX_HASHES_PER_CORE;
 // const VARIUM_URAM_NUM_ITERS_OFFSET: u64 =
 //     NUM_POH_CORES as u64 * 32 * VARIUM_URAM_MAX_HASHES_PER_CORE as u64;
+const VARIUM_RESET_CORE_BASE: u64 = 0x7_0000;
 
 pub type Result<T> = std::result::Result<T, Error>;
 
@@ -165,6 +169,7 @@ impl FpgaPerf {
             core.wait_done()?;
         }
 
+        self.reset_kernels()?;
         // std::thread::sleep(Duration::from_millis(500));
 
         // Read the results back.
@@ -176,6 +181,17 @@ impl FpgaPerf {
         // Copy the results from the buffer back to the input slice.
         buffers.unbuffer_outputs(hashes);
 
+        Ok(())
+    }
+
+    /// Performs a reset of all the kernels by sending those into and out of the reset state.
+    fn reset_kernels(&self) -> Result<()> {
+        for mask in [u32::MAX, 0] {
+            let cmd = mask.to_be_bytes();
+            self.cores[0]
+                .device
+                .shell_write(&cmd, VARIUM_RESET_CORE_BASE)?;
+        }
         Ok(())
     }
 }

@@ -62,7 +62,7 @@ impl XdmaOps for PohCore {
     fn shell_read(&self, buf: &mut [u8], offset: u64) -> XdmaResult<()> {
         let addr = self.base_addrs.shell_base + offset;
         self.device.shell_read(buf, addr)?;
-        println!("@0x{:x} = {:02x?}", addr, buf);
+        // println!("@0x{:x} = {:02x?}", addr, buf);
         Ok(())
     }
 
@@ -82,14 +82,14 @@ impl XdmaOps for PohCore {
 
 impl PohCore {
     pub fn init(&self, num_hashes: u32) -> Result<()> {
-        println!("init");
+        // println!("init");
         let mut control_reg = 0;
         let mut control_bytes = [0u8; 4];
 
         // Wait for IDLE.
-        //        while control_reg & ControlRegBit::Idle as u32 != ControlRegBit::Idle as u32 {
-        for n_reg in 0..16 {
-            self.shell_read(&mut control_bytes, n_reg << 2)?;
+        while control_reg & ControlRegBit::Idle as u32 != ControlRegBit::Idle as u32 {
+            // for n_reg in 0..16 {
+            // self.shell_read(&mut control_bytes, n_reg << 2)?;
             self.shell_read(&mut control_bytes, 0)?;
             control_reg = u32::from_le_bytes(control_bytes);
         }
