@@ -1,6 +1,6 @@
 #![allow(clippy::arithmetic_side_effects)]
 use {
-    criterion::{Criterion, criterion_group, criterion_main},
+    criterion::{criterion_group, criterion_main, Criterion},
     rand::Rng,
     solana_entry::entry::Entry,
     solana_epoch_schedule::{EpochSchedule, MINIMUM_SLOTS_PER_EPOCH},
@@ -9,8 +9,8 @@ use {
     solana_ledger::{
         genesis_utils::create_genesis_config,
         shred::{
-            DATA_SHREDS_PER_FEC_BLOCK, ProcessShredsStats, ReedSolomonCache, Shred, Shredder,
-            filter::ShredRecoveryContext,
+            filter::ShredRecoveryContext, ProcessShredsStats, Shred, Shredder,
+            DATA_SHREDS_PER_FEC_BLOCK,
         },
     },
     solana_packet::PACKET_DATA_SIZE,
@@ -32,7 +32,6 @@ fn new_shred_recovery_context(shreds: &[Shred]) -> ShredRecoveryContext {
     let root_bank = Arc::new(Bank::new_for_tests(&genesis_config));
     let (dummy_retransmit_sender, _) = EvictingSender::new_bounded(0);
     ShredRecoveryContext::new(
-        ReedSolomonCache::default(),
         dummy_retransmit_sender,
         root_bank,
         shreds.first().map(Shred::version).unwrap_or_default(),
@@ -81,7 +80,6 @@ fn make_shreds_from_entries<R: Rng>(
     entries: &[Entry],
     is_last_in_slot: bool,
     chained_merkle_root: Hash,
-    reed_solomon_cache: &ReedSolomonCache,
     stats: &mut ProcessShredsStats,
 ) -> (Vec<Shred>, Vec<Shred>) {
     let next_shred_index = rng.random_range(0..60) * DATA_SHREDS_PER_FEC_BLOCK as u32;
@@ -92,7 +90,6 @@ fn make_shreds_from_entries<R: Rng>(
         chained_merkle_root,
         next_shred_index,
         next_shred_index,
-        reed_solomon_cache,
         stats,
     );
     (black_box(data), black_box(code))
@@ -118,7 +115,6 @@ fn run_make_shreds_from_entries(
     let data_size = num_packets * PACKET_DATA_SIZE;
     let entries = make_dummy_entries(&mut rng, data_size);
     let chained_merkle_root = make_dummy_hash(&mut rng);
-    let reed_solomon_cache = ReedSolomonCache::default();
     let mut stats = ProcessShredsStats::default();
     // Initialize the thread-pool and warm the Reed-Solomon cache.
     for _ in 0..10 {
@@ -129,7 +125,6 @@ fn run_make_shreds_from_entries(
             &entries,
             is_last_in_slot,
             chained_merkle_root,
-            &reed_solomon_cache,
             &mut stats,
         );
     }
@@ -142,7 +137,6 @@ fn run_make_shreds_from_entries(
                 &entries,
                 is_last_in_slot,
                 chained_merkle_root,
-                &reed_solomon_cache,
                 &mut stats,
             );
             black_box(data);
@@ -172,7 +166,6 @@ fn run_recover_shreds(
     let data_size = num_packets * PACKET_DATA_SIZE;
     let entries = make_dummy_entries(&mut rng, data_size);
     let chained_merkle_root = make_dummy_hash(&mut rng);
-    let reed_solomon_cache = ReedSolomonCache::default();
     let mut stats = ProcessShredsStats::default();
     let (data, code) = make_shreds_from_entries(
         &mut rng,
@@ -181,7 +174,6 @@ fn run_recover_shreds(
         &entries,
         is_last_in_slot,
         chained_merkle_root,
-        &reed_solomon_cache,
         &mut stats,
     );
     let fec_set_index = data[0].fec_set_index();
