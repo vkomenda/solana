@@ -1,6 +1,6 @@
 #![allow(clippy::arithmetic_side_effects)]
 use {
-    criterion::{Criterion, criterion_group, criterion_main},
+    criterion::{criterion_group, criterion_main, Criterion},
     rand::Rng,
     solana_entry::entry::Entry,
     solana_epoch_schedule::{EpochSchedule, MINIMUM_SLOTS_PER_EPOCH},
@@ -9,8 +9,8 @@ use {
     solana_ledger::{
         genesis_utils::create_genesis_config,
         shred::{
-            DATA_SHREDS_PER_FEC_BLOCK, ProcessShredsStats, Shred, Shredder,
-            filter::ShredRecoveryContext,
+            filter::ShredRecoveryContext, ProcessShredsStats, Shred, Shredder,
+            DATA_SHREDS_PER_FEC_BLOCK,
         },
     },
     solana_packet::PACKET_DATA_SIZE,
