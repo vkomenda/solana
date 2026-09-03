@@ -1335,11 +1335,11 @@ mod test {
         crate::shred::{ShredFlags, ShredId, ShredType},
         assert_matches::assert_matches,
         itertools::Itertools,
-        rand::{CryptoRng, Rng, seq::SliceRandom},
+        rand::{Rng, seq::SliceRandom},
         solana_keypair::Keypair,
         solana_packet::PACKET_DATA_SIZE,
         solana_signer::Signer,
-        std::{cmp::Ordering, collections::HashMap},
+        std::{cmp::Ordering, collections::HashMap, iter::repeat_with},
         test_case::{test_case, test_matrix},
     };
 
@@ -1403,211 +1403,29 @@ mod test {
         }
     }
 
-    fn make_common_header<R: Rng + CryptoRng>(
-        rng: &mut R,
-        shred_variant: ShredVariant,
-    ) -> ShredCommonHeader {
-        ShredCommonHeader {
-            signature: Signature::default(),
-            shred_variant,
-            slot: 145_865_705,
-            index: 1835,
-            version: rng.random(),
-            fec_set_index: 1835,
-        }
-    }
-
-    #[test_case(19, false)]
-    #[test_case(19, true)]
-    #[test_case(31, false)]
-    #[test_case(31, true)]
-    #[test_case(32, false)]
-    #[test_case(32, true)]
-    #[test_case(33, false)]
-    #[test_case(33, true)]
-    #[test_case(37, false)]
-    #[test_case(37, true)]
-    #[test_case(64, false)]
-    #[test_case(64, true)]
-    #[test_case(73, false)]
-    #[test_case(73, true)]
-    fn test_recover_merkle_shreds(num_shreds: usize, resigned: bool) {
+    #[test]
+    fn test_merkle_proof_entry_from_hash() {
         let mut rng = rand::rng();
-        for num_data_shreds in 1..num_shreds {
-            let num_coding_shreds = num_shreds - num_data_shreds;
-            // Batch shapes outside Rs<SHREDS_PER_FEC_BLOCK, CODING_SHREDS_PER_FEC_BLOCK>
-            // cannot be encoded. Verify that recover rejects them.
-            if num_data_shreds > DATA_SHREDS_PER_FEC_BLOCK
-                || num_coding_shreds > CODING_SHREDS_PER_FEC_BLOCK
-            {
-                run_recover_rejects_oversized(
-                    &mut rng,
-                    resigned,
-                    num_data_shreds,
-                    num_coding_shreds,
-                );
-            } else {
-                run_recover_merkle_shreds(&mut rng, resigned, num_data_shreds, num_coding_shreds);
-            }
-        }
+        let bytes: [u8; 32] = rng.random();
+        let hash = Hash::from(bytes);
+        let entry = &hash.as_ref()[..SIZE_OF_MERKLE_PROOF_ENTRY];
+        let entry = MerkleProofEntry::try_from(entry).unwrap();
+        assert_eq!(entry, &bytes[..SIZE_OF_MERKLE_PROOF_ENTRY]);
     }
 
-    fn run_recover_rejects_oversized<R: Rng + CryptoRng>(
-        rng: &mut R,
-        resigned: bool,
-        num_data_shreds: usize,
-        num_coding_shreds: usize,
-    ) {
-        let num_shreds = num_data_shreds + num_coding_shreds;
-        let proof_size = get_proof_size(num_shreds);
-        let common_header = make_common_header(
-            rng,
-            ShredVariant::MerkleCode {
-                proof_size,
-                resigned,
-            },
-        );
-        let coding_header = CodingShredHeader {
-            num_data_shreds: num_data_shreds as u16,
-            num_coding_shreds: num_coding_shreds as u16,
-            position: 0,
-        };
-        let mut payload = vec![0u8; ShredCode::SIZE_OF_PAYLOAD];
-        wincode::serialize_into(&mut payload[..], &(&common_header, &coding_header)).unwrap();
-        let shreds = vec![Shred::ShredCode(ShredCode {
-            common_header,
-            coding_header,
-            payload: Payload::from(payload),
-        })];
-        if num_data_shreds > DATA_SHREDS_PER_FEC_BLOCK {
+    #[test]
+    fn test_make_merkle_proof_error() {
+        let mut rng = rand::rng();
+        let nodes = repeat_with(|| rng.random::<[u8; 32]>()).map(Hash::from);
+        let nodes: Vec<_> = nodes.take(5).collect();
+        let size = nodes.len();
+        let tree = MerkleTree::try_new(nodes.into_iter().map(Ok)).unwrap();
+        for index in size..size + 3 {
             assert_matches!(
-                recover(shreds).err(),
-                Some(Error::InvalidNumDataShreds(n)) if n as usize == num_data_shreds
-            );
-        } else if num_coding_shreds > CODING_SHREDS_PER_FEC_BLOCK {
-            assert_matches!(
-                recover(shreds).err(),
-                Some(Error::InvalidNumCodingShreds(n)) if n as usize == num_coding_shreds
+                tree.make_merkle_proof(index, size).next(),
+                Some(Err(Error::InvalidMerkleProofShape(_, _)))
             );
         }
-    }
-
-    fn run_recover_merkle_shreds<R: Rng + CryptoRng>(
-        rng: &mut R,
-        resigned: bool,
-        num_data_shreds: usize,
-        num_coding_shreds: usize,
-    ) {
-        let keypair = Keypair::new();
-        let num_shreds = num_data_shreds + num_coding_shreds;
-        let proof_size = get_proof_size(num_shreds);
-        let capacity = ShredData::capacity(proof_size, resigned).unwrap();
-        let common_header = make_common_header(
-            rng,
-            ShredVariant::MerkleData {
-                proof_size,
-                resigned,
-            },
-        );
-        let data_header = {
-            let reference_tick = rng.random_range(0..0x40);
-            DataShredHeader {
-                parent_offset: rng.random::<u16>().max(1),
-                flags: ShredFlags::from_bits_retain(reference_tick),
-                size: 0,
-            }
-        };
-        let coding_header = CodingShredHeader {
-            num_data_shreds: num_data_shreds as u16,
-            num_coding_shreds: num_coding_shreds as u16,
-            position: 0,
-        };
-        let mut shreds = Vec::with_capacity(num_shreds);
-        for i in 0..num_data_shreds {
-            let common_header = ShredCommonHeader {
-                index: common_header.index + i as u32,
-                ..common_header
-            };
-            let size = ShredData::SIZE_OF_HEADERS + rng.random_range(0..capacity);
-            let data_header = DataShredHeader {
-                size: size as u16,
-                ..data_header
-            };
-            let mut payload = vec![0u8; ShredData::SIZE_OF_PAYLOAD];
-            wincode::serialize_into(&mut payload[..], &(&common_header, &data_header)).unwrap();
-            rng.fill(&mut payload[ShredData::SIZE_OF_HEADERS..size]);
-            let shred = ShredData {
-                common_header,
-                data_header,
-                payload: Payload::from(payload),
-            };
-            shreds.push(Shred::ShredData(shred));
-        }
-        let data: Vec<_> = shreds
-            .iter_mut()
-            .map(Shred::erasure_shard_mut)
-            .collect::<Result<_, _>>()
-            .unwrap();
-        let shard_len = data[0].len();
-
-        let mut message: Vec<Gf2p8_11d> = Vec::with_capacity(DATA_SHREDS_PER_FEC_BLOCK * shard_len);
-        for shard in data {
-            let src: &[Gf2p8_11d] = unsafe {
-                std::slice::from_raw_parts(shard.as_ptr() as *const Gf2p8_11d, shard_len)
-            };
-            message.extend_from_slice(src);
-        }
-        // Zero any remaining message shards.
-        message.resize(DATA_SHREDS_PER_FEC_BLOCK * shard_len, 0u8.into());
-
-        let mut parity = vec![0u8.into(); CODING_SHREDS_PER_FEC_BLOCK * shard_len];
-
-        RS_ENCODE_WORKSPACE.with_borrow_mut(|mut ws| {
-            let rs = Rs::<SHREDS_PER_FEC_BLOCK, CODING_SHREDS_PER_FEC_BLOCK>::default();
-            ws.resize(CODING_SHREDS_PER_FEC_BLOCK * shard_len, 0u8.into());
-            rs.encode_systematic_sharded(&message, &mut parity, &mut ws, shard_len);
-        });
-
-        for (i, shard) in parity.chunks(shard_len).take(num_coding_shreds).enumerate() {
-            let code: &[u8] =
-                unsafe { std::slice::from_raw_parts(shard.as_ptr() as *const u8, shard_len) };
-
-            let common_header = ShredCommonHeader {
-                shred_variant: ShredVariant::MerkleCode {
-                    proof_size,
-                    resigned,
-                },
-                index: common_header.index + i as u32 + 7,
-                ..common_header
-            };
-            let coding_header = CodingShredHeader {
-                position: i as u16,
-                ..coding_header
-            };
-            let mut payload = vec![0u8; ShredCode::SIZE_OF_PAYLOAD];
-            wincode::serialize_into(&mut payload[..], &(&common_header, &coding_header)).unwrap();
-
-            payload[ShredCode::SIZE_OF_HEADERS..ShredCode::SIZE_OF_HEADERS + code.len()]
-                .copy_from_slice(code);
-            let shred = ShredCode {
-                common_header,
-                coding_header,
-                payload: Payload::from(payload),
-            };
-            shreds.push(Shred::ShredCode(shred));
-        }
-        let nodes = shreds.iter().map(Shred::merkle_node);
-        let tree = MerkleTree::try_new(nodes).unwrap();
-        for (index, shred) in shreds.iter_mut().enumerate() {
-            let proof = tree.make_merkle_proof(index, num_shreds);
-            shred.set_merkle_proof(proof).unwrap();
-            let data = shred.signed_data().unwrap();
-            let signature = keypair.sign_message(data.as_ref());
-            shred.set_signature(signature);
-            assert!(shred.verify(&keypair.pubkey()));
-            assert_matches!(shred.sanitize(), Ok(()));
-        }
-        verify_erasure_recovery(rng, &shreds);
     }
 
     fn verify_erasure_recovery<R: Rng>(rng: &mut R, shreds: &[Shred]) {
