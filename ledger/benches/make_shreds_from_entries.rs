@@ -95,7 +95,7 @@ fn run_make_shreds_from_entries(
     is_last_in_slot: bool,
 ) {
     let mut rng = rand::rng();
-    let slot = rng.random_range(1..=100_000);
+    let slot = rng.random_range(1..=400);
     let parent_offset = 1;
     let shredder = Shredder::new(
         slot,
@@ -147,13 +147,13 @@ fn run_recover_shreds(
     is_last_in_slot: bool,
 ) {
     let mut rng = rand::rng();
-    let slot = 315_892_061 + rng.random_range(0..=100_000);
-    let parent_offset = rng.random_range(1..=u16::MAX);
+    let slot = rng.random_range(1..=400);
+    let parent_offset = 1;
     let shredder = Shredder::new(
         slot,
-        slot - u64::from(parent_offset), // parent_slot
-        rng.random_range(0..64),         // reference_tick
-        rng.random(),                    // shred_version
+        slot - parent_offset,    // parent_slot
+        rng.random_range(0..64), // reference_tick
+        rng.random(),            // shred_version
     )
     .unwrap();
     let keypair = Keypair::new();
