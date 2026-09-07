@@ -14,9 +14,9 @@ dependencies = [
 
 [[package]]
 name = "additive-fft-reed-solomon"
-version = "0.1.2"
+version = "0.2.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41a52212a3f225892782b55adf22d2c03ce62043ebe138c0a2fb349218cb29cc"
+checksum = "faa9049e04eab1b53e22e67ce2913dc3e5d9f0234aad9f837dd6b969357355b2"
 dependencies = [
  "additive-fft-reed-solomon-gf2p8",
  "cfg-if 1.0.5",
