@@ -791,7 +791,7 @@ pub(super) fn recover(
             RS_RECOVER_WORKSPACE.with_borrow_mut(|mut ws| {
                 let rs = Rs::<SHREDS_PER_FEC_BLOCK, CODING_SHREDS_PER_FEC_BLOCK>::default();
                 ws.resize(SHREDS_PER_FEC_BLOCK * shard_len, 0u8.into());
-                if !rs.recover_erasure_shards(&mut rec, &mut ws, shard_len, &erasure_positions) {
+                if !rs.recover_erasures_sharded(&mut rec, &mut ws, shard_len, &erasure_positions) {
                     return Err(Error::TooManyErasures);
                 }
                 Ok(())
@@ -1251,8 +1251,7 @@ fn finish_erasure_batch(
     debug_assert_eq!(num_coding_shreds, CODING_SHREDS_PER_FEC_BLOCK);
 
     let shard_len = shreds[0].erasure_shard_mut()?.len();
-    RS_MESSAGE.with(|msg| {
-        let mut msg = msg.borrow_mut();
+    RS_MESSAGE.with_borrow_mut(|msg| {
         msg.resize(DATA_SHREDS_PER_FEC_BLOCK * shard_len, 0u8.into());
 
         for (i, shred) in shreds.iter_mut().take(num_data_shreds).enumerate() {
@@ -1263,10 +1262,7 @@ fn finish_erasure_batch(
             msg[i * shard_len..(i + 1) * shard_len].copy_from_slice(src);
         }
 
-        RS_PARITY.with(|par| {
-            let mut par = par.borrow_mut();
-            // Set the length to the number of parity shards and fill with zeros.
-            par.clear();
+        RS_PARITY.with_borrow_mut(|mut par| {
             par.resize(CODING_SHREDS_PER_FEC_BLOCK * shard_len, 0u8.into());
 
             RS_ENCODE_WORKSPACE.with(|ws| {
