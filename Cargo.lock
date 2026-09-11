@@ -14,9 +14,9 @@ dependencies = [
 
 [[package]]
 name = "additive-fft-reed-solomon"
-version = "0.1.2"
+version = "0.2.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "41a52212a3f225892782b55adf22d2c03ce62043ebe138c0a2fb349218cb29cc"
+checksum = "e24cd70cf4280e39cfa7d9f04ec93ff9bb5dbe12a3bc1292d597885770a33fe5"
 dependencies = [
  "additive-fft-reed-solomon-gf2p8",
  "cfg-if 1.0.4",
@@ -24,9 +24,9 @@ dependencies = [
 
 [[package]]
 name = "additive-fft-reed-solomon-gf2p8"
-version = "0.1.1"
+version = "0.1.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d52bd08bc1cbd6f99f6afe7de6be4f818f79a93365f97c2986f8a9162d74a8b2"
+checksum = "cd1b3ab9b0f5c590193c7f671222f8bd3d67c85cdd5b468b096b7449425539a7"
 
 [[package]]
 name = "adler2"
