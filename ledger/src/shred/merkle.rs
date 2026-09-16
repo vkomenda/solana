@@ -36,10 +36,6 @@ thread_local! {
 }
 
 thread_local! {
-    static RS_RECOVER_WORKSPACE: RefCell<Vec<Gf2p8_11d>> = RefCell::new(Vec::new());
-}
-
-thread_local! {
     static RS_MESSAGE: RefCell<Vec<Gf2p8_11d>> = RefCell::new(Vec::new());
 }
 
@@ -602,6 +598,13 @@ fn get_merkle_node(shred: &[u8], offsets: Range<usize>) -> Result<Hash, Error> {
     Ok(hashv(&[MERKLE_HASH_PREFIX_LEAF, node]))
 }
 
+// Returns a buffer aligned to 64 bytes to increase the performance of vector ops.
+fn aligned_mut(buf: &mut Vec<Gf2p8_11d>, len: usize) -> &mut [Gf2p8_11d] {
+    buf.resize(len + 63, Gf2p8_11d(0));
+    let off = buf.as_ptr().align_offset(64);
+    &mut buf[off..off + len]
+}
+
 pub(super) fn recover(
     shreds: Vec<Shred>,
 ) -> Result<impl Iterator<Item = Result<Shred, Error>> + use<>, Error> {
@@ -733,7 +736,7 @@ pub(super) fn recover(
     let mut nodes: [Option<Hash>; SHREDS_PER_FEC_BLOCK] = [None; SHREDS_PER_FEC_BLOCK];
 
     let recovered = RS_RECEIVED.with_borrow_mut(|mut rec| {
-        rec.resize(SHREDS_PER_FEC_BLOCK * shard_len, 0u8.into());
+        let mut rec = aligned_mut(&mut rec, SHREDS_PER_FEC_BLOCK * shard_len);
 
         // Ones for the given shreds and zeros for erasures. Codec ordering: parity shard indices
         // are less than message shard indices.
@@ -788,14 +791,10 @@ pub(super) fn recover(
         }
 
         if !erasure_positions.is_empty() {
-            RS_RECOVER_WORKSPACE.with_borrow_mut(|mut ws| {
-                let rs = Rs::<SHREDS_PER_FEC_BLOCK, CODING_SHREDS_PER_FEC_BLOCK>::default();
-                ws.resize(SHREDS_PER_FEC_BLOCK * shard_len, 0u8.into());
-                if !rs.recover_erasures_sharded(&mut rec, &mut ws, shard_len, &erasure_positions) {
-                    return Err(Error::TooManyErasures);
-                }
-                Ok(())
-            })?;
+            let rs = Rs::<SHREDS_PER_FEC_BLOCK, CODING_SHREDS_PER_FEC_BLOCK>::default();
+            if !rs.recover_erasures_sharded_clobber(&mut rec, shard_len, &erasure_positions) {
+                return Err(Error::TooManyErasures);
+            }
         }
 
         // Collect, verify and sanitize recovered shreds, re-compute the Merkle tree and set
@@ -1251,8 +1250,8 @@ fn finish_erasure_batch(
     debug_assert_eq!(num_coding_shreds, CODING_SHREDS_PER_FEC_BLOCK);
 
     let shard_len = shreds[0].erasure_shard_mut()?.len();
-    RS_MESSAGE.with_borrow_mut(|msg| {
-        msg.resize(DATA_SHREDS_PER_FEC_BLOCK * shard_len, 0u8.into());
+    RS_MESSAGE.with_borrow_mut(|mut msg| {
+        let msg = aligned_mut(&mut msg, DATA_SHREDS_PER_FEC_BLOCK * shard_len);
 
         for (i, shred) in shreds.iter_mut().take(num_data_shreds).enumerate() {
             let shard = shred.erasure_shard_mut()?;
@@ -1263,11 +1262,10 @@ fn finish_erasure_batch(
         }
 
         RS_PARITY.with_borrow_mut(|mut par| {
-            par.resize(CODING_SHREDS_PER_FEC_BLOCK * shard_len, 0u8.into());
+            let mut par = aligned_mut(&mut par, CODING_SHREDS_PER_FEC_BLOCK * shard_len);
 
-            RS_ENCODE_WORKSPACE.with(|ws| {
-                let mut ws = ws.borrow_mut();
-                ws.resize(CODING_SHREDS_PER_FEC_BLOCK * shard_len, 0u8.into());
+            RS_ENCODE_WORKSPACE.with_borrow_mut(|mut ws| {
+                let mut ws = aligned_mut(&mut ws, CODING_SHREDS_PER_FEC_BLOCK * shard_len);
                 let rs = Rs::<SHREDS_PER_FEC_BLOCK, CODING_SHREDS_PER_FEC_BLOCK>::default();
                 rs.encode_systematic_sharded(&msg, &mut par, &mut ws, shard_len);
             });
