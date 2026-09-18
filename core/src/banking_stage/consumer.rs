@@ -236,6 +236,7 @@ impl Consumer {
         // were not included in the block should have their cost removed, the rest
         // should update with their actually consumed units.
         QosService::remove_or_update_costs(
+            txs.iter(),
             transaction_qos_cost_results.iter(),
             commit_transactions_result.as_ref().ok(),
             bank,
@@ -565,7 +566,7 @@ mod tests {
         solana_cost_model::cost_model::CostModel,
         solana_fee_calculator::FeeCalculator,
         solana_hash::Hash,
-        solana_instruction::error::InstructionError,
+        solana_instruction_error::InstructionError,
         solana_keypair::Keypair,
         solana_leader_schedule::SlotLeader,
         solana_ledger::genesis_utils::{

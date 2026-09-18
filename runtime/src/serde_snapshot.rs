@@ -68,12 +68,14 @@ use {
 };
 
 mod obsolete_accounts;
+mod startup_hints;
 mod status_cache;
 mod storage;
 mod storages_list;
 mod tests;
 mod types;
 
+pub use startup_hints::StartupHints;
 pub(crate) use {
     obsolete_accounts::{SerdeObsoleteAccounts, SerdeObsoleteAccountsMap},
     status_cache::{deserialize_status_cache, serialize_status_cache},
@@ -86,7 +88,7 @@ type MaxStreamSizeConfig = wincode::config::Configuration<true, MAX_STREAM_SIZE>
 
 /// A slot paired with its account storage entries; only kept to name the wire shape of the
 /// no-longer-used storage entries map in [`AccountsDbFields`] and [`SerializableAccountsDb`].
-#[cfg_attr(feature = "frozen-abi", derive(AbiExample, StableAbi, StableAbiSample))]
+#[cfg_attr(feature = "frozen-abi", derive(StableAbi, StableAbiSample))]
 #[derive(Debug, Serialize, Deserialize, SchemaRead, SchemaWrite)]
 pub(crate) struct SlotAccountStorageEntries {
     slot: Slot,
@@ -104,7 +106,7 @@ pub(crate) struct SlotAccountStorageEntries {
 
 #[cfg_attr(
     feature = "frozen-abi",
-    derive(AbiExample, Serialize, SchemaWrite, StableAbi, StableAbiSample)
+    derive(Serialize, SchemaWrite, StableAbi, StableAbiSample)
 )]
 #[derive(Debug, Deserialize, SchemaRead)]
 pub(crate) struct AccountsDbFields(
@@ -127,7 +129,7 @@ pub(crate) struct AccountsDbFields(
 );
 
 #[repr(C)]
-#[cfg_attr(feature = "frozen-abi", derive(AbiExample, StableAbi, StableAbiSample))]
+#[cfg_attr(feature = "frozen-abi", derive(StableAbi, StableAbiSample))]
 #[cfg_attr(feature = "dev-context-only-utils", derive(Default, PartialEq))]
 #[derive(Serialize, Deserialize, Clone, Debug, SchemaRead, SchemaWrite)]
 pub struct UnusedIncrementalSnapshotPersistence {
@@ -141,7 +143,7 @@ pub struct UnusedIncrementalSnapshotPersistence {
 #[repr(C)]
 #[cfg_attr(
     feature = "frozen-abi",
-    derive(AbiExample, StableAbi, StableAbiSample),
+    derive(StableAbi, StableAbiSample),
     frozen_abi(
         abi_digest = "EcPdH21GSyYYTiSZbAN157YfrT3G8rKvDiNh7q1fw8Bc",
         abi_serializer = ["bincode", "wincode"],
@@ -155,7 +157,7 @@ struct BankHashInfo {
     stats: BankHashStats,
 }
 
-#[cfg_attr(feature = "frozen-abi", derive(AbiExample, StableAbi, StableAbiSample))]
+#[cfg_attr(feature = "frozen-abi", derive(StableAbi, StableAbiSample))]
 #[derive(Default, Clone, PartialEq, Eq, Debug, Deserialize, Serialize, SchemaRead, SchemaWrite)]
 struct UnusedAccounts {
     unused1: HashSet<Pubkey>,
@@ -427,7 +429,7 @@ where
 /// struct.
 #[cfg_attr(
     feature = "frozen-abi",
-    derive(AbiExample, Serialize, SchemaWrite, StableAbi, StableAbiSample)
+    derive(Serialize, SchemaWrite, StableAbi, StableAbiSample)
 )]
 #[derive(Clone, Debug, Deserialize, SchemaRead)]
 struct ExtraFieldsToDeserialize {
@@ -465,7 +467,7 @@ struct ExtraFieldsToDeserialize {
 /// this one.
 #[cfg_attr(
     feature = "frozen-abi",
-    derive(AbiExample, StableAbi, StableAbiSample),
+    derive(StableAbi, StableAbiSample),
     // Write-only type (its deserialize counterpart is `ExtraFieldsToDeserialize`), so the abi digest
     // only verifies the serialized wire format; there is no roundtrip.
     frozen_abi(

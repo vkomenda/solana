@@ -186,6 +186,7 @@ pub fn execute_txn_with_callback<C: InvokeContextCallback>(
         executed: true,
         status,
         resulting_accounts,
+        rollback_accounts: vec![],
         return_data,
         executed_units,
         fee_details: FeeDetails::new(0, 0),
@@ -207,7 +208,7 @@ mod tests {
         solana_account::ReadableAccount,
         solana_address_lookup_table_interface::state::{AddressLookupTable, LookupTableMeta},
         solana_clock::Clock,
-        solana_instruction::error::InstructionError,
+        solana_instruction_error::InstructionError,
         solana_message::{
             AddressLookupTableAccount, Message as LegacyMessage, VersionedMessage, v0,
         },

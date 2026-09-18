@@ -12,7 +12,7 @@ use {
     solana_builtins::core_bpf_migration::CoreBpfMigrationConfig,
     solana_compute_budget::compute_budget::ComputeBudget,
     solana_hash::Hash,
-    solana_instruction::error::InstructionError,
+    solana_instruction_error::InstructionError,
     solana_loader_v3_interface::state::UpgradeableLoaderState,
     solana_program_runtime::{
         deploy::deploy_program,
@@ -139,9 +139,8 @@ impl Bank {
         // Set up the two `LoadedProgramsForTxBatch` instances, as if
         // processing a new transaction batch.
         let mut program_cache_for_tx_batch = ProgramCacheForTxBatch::new(self.slot);
-        let program_runtime_environment = self
-            .transaction_processor
-            .program_runtime_environment_for_epoch(self.epoch);
+        let program_runtime_environment =
+            self.create_program_runtime_environment(&self.feature_set);
 
         // Configure a dummy `InvokeContext` from the runtime's current
         // environment, as well as the two `ProgramCacheForTxBatch`
@@ -213,7 +212,7 @@ impl Bank {
             .write()
             .unwrap()
             .merge(
-                &self.transaction_processor.program_runtime_environment,
+                &program_runtime_environment,
                 self.slot,
                 &program_cache_for_tx_batch.drain_modified_entries(),
             );
@@ -529,7 +528,6 @@ pub(crate) mod tests {
         solana_message::Message,
         solana_native_token::LAMPORTS_PER_SOL,
         solana_program_runtime::{
-            loaded_programs::ProgramToLoad,
             program_cache_entry::{
                 ProgramCacheEntry, ProgramCacheEntryOwner, ProgramCacheEntryType,
             },
@@ -538,7 +536,9 @@ pub(crate) mod tests {
         solana_pubkey::Pubkey,
         solana_sdk_ids::{bpf_loader, bpf_loader_upgradeable, native_loader, system_program},
         solana_signer::Signer,
-        solana_svm::account_loader::AccountLoader,
+        solana_svm::{
+            account_loader::AccountLoader, program_loader::filter_executable_program_accounts,
+        },
         solana_svm_timings::ExecuteTimings,
         solana_transaction::Transaction,
         solana_transaction_error::TransactionError,
@@ -769,14 +769,15 @@ pub(crate) mod tests {
                 1,
             );
             let mut program_cache_for_tx_batch = ProgramCacheForTxBatch::new(bank.slot());
+            let missing_programs = filter_executable_program_accounts(
+                &account_loader,
+                &program_cache_for_tx_batch,
+                std::iter::once(&self.target_program_address),
+            );
             let mut execute_timings = ExecuteTimings::default();
             bank.transaction_processor.replenish_program_cache(
                 &account_loader,
-                vec![ProgramToLoad {
-                    program_id: &self.target_program_address,
-                    loader: ProgramCacheEntryOwner::LoaderV3,
-                    deployment_slot: migration_or_upgrade_slot,
-                }],
+                missing_programs,
                 &bank.transaction_processor.program_runtime_environment,
                 &mut program_cache_for_tx_batch,
                 &mut execute_timings,
@@ -796,6 +797,17 @@ pub(crate) mod tests {
                 assert_matches!(target_entry.program, ProgramCacheEntryType::DelayVisibility);
             } else {
                 assert_matches!(target_entry.program, ProgramCacheEntryType::Loaded(..));
+
+                // The target program entry should have the environment of the
+                // new epoch.
+                let env = target_entry.program.get_environment().unwrap();
+                assert_eq!(env, &bank.transaction_processor.program_runtime_environment);
+                assert_eq!(
+                    env,
+                    &bank
+                        .transaction_processor
+                        .program_runtime_environment_for_epoch(bank.epoch()),
+                );
             }
         }
     }

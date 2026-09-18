@@ -353,6 +353,12 @@ impl ProgramCacheForTxBatch {
         self.slot
     }
 
+    /// Look up `entries` directly, without the delay visibility rewrite
+    /// `find` performs, so a test can see the entry as it was stored.
+    pub fn get_entry_for_tests(&self, key: &Pubkey) -> Option<&Arc<ProgramCacheEntry>> {
+        self.entries.get(key)
+    }
+
     pub fn set_slot_for_tests(&mut self, slot: Slot) {
         self.slot = slot;
     }
@@ -946,22 +952,6 @@ impl<FG: ForkGraph> ProgramCache<FG> {
     }
 }
 
-#[cfg(feature = "frozen-abi")]
-impl solana_frozen_abi::abi_example::AbiExample for ProgramCacheEntry {
-    fn example() -> Self {
-        // ProgramCacheEntry isn't serializable by definition.
-        Self::default()
-    }
-}
-
-#[cfg(feature = "frozen-abi")]
-impl<FG: ForkGraph> solana_frozen_abi::abi_example::AbiExample for ProgramCache<FG> {
-    fn example() -> Self {
-        // ProgramCache isn't serializable by definition.
-        Self::new(Slot::default())
-    }
-}
-
 #[cfg(test)]
 pub(crate) mod tests {
     use {
@@ -1413,6 +1403,205 @@ pub(crate) mod tests {
             });
     }
 
+    #[test_matrix(
+        (
+            ProgramCacheEntryType::FailedVerification(get_mock_program_runtime_environment()),
+            ProgramCacheEntryType::Closed,
+            ProgramCacheEntryType::Unloaded(get_mock_program_runtime_environment()),
+            new_loaded_entry(get_mock_program_runtime_environment()),
+            ProgramCacheEntryType::Builtin(BuiltinProgram::new_mock()),
+        ),
+        (false, true)
+    )]
+    fn test_assign_program_no_second_level(
+        program: ProgramCacheEntryType,
+        empty_second_level: bool,
+    ) {
+        // Here we test the scenario where no second_level entry exists for the
+        // program. We expect the `second_level.binary_search_by` to return
+        // `Err(0)` and we expect the single entry to land in the cache.
+        let mut cache = ProgramCache::<TestForkGraph>::new(0);
+        let env = get_mock_program_runtime_environment();
+        let program_id = Pubkey::new_unique();
+
+        if empty_second_level {
+            // Make the entry already exist, but with an empty second level.
+            match &mut cache.index {
+                IndexImplementation::V1 { entries, .. } => {
+                    entries.insert(program_id, Vec::new());
+                }
+            }
+        }
+
+        let entry = Arc::new(ProgramCacheEntry {
+            program,
+            account_owner: ProgramCacheEntryOwner::LoaderV3,
+            deployment_slot: 10,
+            stats: Arc::default(),
+            latest_access_slot: AtomicU64::default(),
+        });
+
+        cache.assign_program(&env, program_id, 10, Arc::clone(&entry));
+
+        // We should have just the one single entry we just inserted.
+        let slot_versions = cache.get_slot_versions_for_tests(&program_id);
+        assert_eq!(slot_versions.len(), 1);
+        assert!(Arc::ptr_eq(slot_versions.first().unwrap(), &entry));
+
+        // Stats should be incremented by 1 to exactly 1.
+        assert_eq!(cache.stats.insertions.load(Ordering::Relaxed), 1);
+    }
+
+    #[test_matrix(
+        (
+            new_closed_entry,
+            new_builtin_entry,
+            new_failed_verification_entry,
+            new_unloaded_entry,
+            new_loaded_entry,
+        ),
+        ((50, 0), (150, 1), (250, 2), (350, 3))
+    )]
+    fn test_assign_program_new_insertion_deployment_slot(
+        new_program: fn(ProgramRuntimeEnvironment) -> ProgramCacheEntryType,
+        case: (Slot, usize),
+    ) {
+        let (deployment_slot, expected_index) = case;
+        let mut cache = ProgramCache::<TestForkGraph>::new(0);
+        let env = get_mock_program_runtime_environment();
+        let program_id = Pubkey::new_unique();
+
+        // Entries at distinct deployment slots always coexist.
+        for slot in [100, 200, 300] {
+            cache.assign_program(
+                &env,
+                program_id,
+                slot,
+                new_test_entry_with_owner(
+                    slot,
+                    ProgramCacheEntryOwner::LoaderV3,
+                    new_program(env.clone()),
+                ),
+            );
+        }
+
+        // Only the deployment slot differs, so it alone decides the index.
+        let entry = new_test_entry_with_owner(
+            deployment_slot,
+            ProgramCacheEntryOwner::LoaderV3,
+            new_program(env.clone()),
+        );
+        cache.assign_program(&env, program_id, deployment_slot, Arc::clone(&entry));
+
+        let slot_versions = cache.get_slot_versions_for_tests(&program_id);
+        assert_eq!(slot_versions.len(), 4);
+        assert!(Arc::ptr_eq(
+            slot_versions.get(expected_index).unwrap(),
+            &entry
+        ));
+        assert_eq!(cache.stats.insertions.load(Ordering::Relaxed), 4);
+    }
+
+    #[test_matrix(
+        (new_failed_verification_entry, new_unloaded_entry, new_loaded_entry),
+        (
+            (ProgramCacheEntryOwner::NativeLoader, 0),
+            (ProgramCacheEntryOwner::LoaderV2, 1),
+            (ProgramCacheEntryOwner::LoaderV4, 2),
+        )
+    )]
+    fn test_assign_program_new_insertion_account_owner(
+        new_program: fn(ProgramRuntimeEnvironment) -> ProgramCacheEntryType,
+        case: (ProgramCacheEntryOwner, usize),
+    ) {
+        let (account_owner, expected_index) = case;
+        let mut cache = ProgramCache::<TestForkGraph>::new(0);
+        let env = get_mock_program_runtime_environment();
+        let program_id = Pubkey::new_unique();
+
+        // Entries at the same deployment slot only coexist when their
+        // environments differ, so give each one its own.
+        for owner in [
+            ProgramCacheEntryOwner::LoaderV1,
+            ProgramCacheEntryOwner::LoaderV3,
+        ] {
+            cache.assign_program(
+                &env,
+                program_id,
+                100,
+                new_test_entry_with_owner(
+                    100,
+                    owner,
+                    new_program(ProgramRuntimeEnvironment::from(BuiltinProgram::new_mock())),
+                ),
+            );
+        }
+
+        // None of the environments are the current one, so the account owner
+        // alone decides the index.
+        let entry = new_test_entry_with_owner(
+            100,
+            account_owner,
+            new_program(ProgramRuntimeEnvironment::from(BuiltinProgram::new_mock())),
+        );
+        cache.assign_program(&env, program_id, 100, Arc::clone(&entry));
+
+        let slot_versions = cache.get_slot_versions_for_tests(&program_id);
+        assert_eq!(slot_versions.len(), 3);
+        assert!(Arc::ptr_eq(
+            slot_versions.get(expected_index).unwrap(),
+            &entry
+        ));
+        assert_eq!(cache.stats.insertions.load(Ordering::Relaxed), 3);
+    }
+
+    #[test_matrix(
+        (new_failed_verification_entry, new_unloaded_entry, new_loaded_entry),
+        (false, true)
+    )]
+    fn test_assign_program_new_insertion_environment(
+        new_program: fn(ProgramRuntimeEnvironment) -> ProgramCacheEntryType,
+        entry_uses_current_env: bool,
+    ) {
+        let mut cache = ProgramCache::<TestForkGraph>::new(0);
+        let env = get_mock_program_runtime_environment();
+        let other_env = ProgramRuntimeEnvironment::from(BuiltinProgram::new_mock());
+        let program_id = Pubkey::new_unique();
+
+        // Deployment slot and account owner are equal, so entries for the
+        // current environment sort after those which are not.
+        let (existing_env, entry_env, expected_index) = if entry_uses_current_env {
+            (other_env, env.clone(), 1)
+        } else {
+            (env.clone(), other_env, 0)
+        };
+        cache.assign_program(
+            &env,
+            program_id,
+            100,
+            new_test_entry_with_owner(
+                100,
+                ProgramCacheEntryOwner::LoaderV3,
+                new_program(existing_env),
+            ),
+        );
+
+        let entry = new_test_entry_with_owner(
+            100,
+            ProgramCacheEntryOwner::LoaderV3,
+            new_program(entry_env),
+        );
+        cache.assign_program(&env, program_id, 100, Arc::clone(&entry));
+
+        let slot_versions = cache.get_slot_versions_for_tests(&program_id);
+        assert_eq!(slot_versions.len(), 2);
+        assert!(Arc::ptr_eq(
+            slot_versions.get(expected_index).unwrap(),
+            &entry
+        ));
+        assert_eq!(cache.stats.insertions.load(Ordering::Relaxed), 2);
+    }
+
     #[test]
     #[should_panic(expected = "Unexpected assignment of a DelayVisibility tombstone")]
     fn test_assign_program_delay_visibility_tombstone_panics() {
@@ -1597,47 +1786,64 @@ pub(crate) mod tests {
         let mut cache = ProgramCache::<TestForkGraph>::new(0);
         let env = get_mock_program_runtime_environment();
         let program_id = Pubkey::new_unique();
-        let closed_other_slot = Arc::new(ProgramCacheEntry {
-            program: ProgramCacheEntryType::Closed,
-            account_owner: ProgramCacheEntryOwner::LoaderV2,
-            deployment_slot: 9,
-            stats: Arc::default(),
-            latest_access_slot: AtomicU64::default(),
-        });
-        let closed_current_slot = Arc::new(ProgramCacheEntry {
-            program: ProgramCacheEntryType::Closed,
-            account_owner: ProgramCacheEntryOwner::LoaderV2,
-            deployment_slot: 10,
-            stats: Arc::default(),
-            latest_access_slot: AtomicU64::default(),
-        });
-        let loaded_entry_current_env = Arc::new(ProgramCacheEntry {
-            program: ProgramCacheEntryType::Unloaded(get_mock_program_runtime_environment()),
-            account_owner: ProgramCacheEntryOwner::LoaderV2,
-            deployment_slot: 10,
-            stats: Arc::default(),
-            latest_access_slot: AtomicU64::default(),
-        });
-        let loaded_entry_upcoming_env = Arc::new(ProgramCacheEntry {
-            program: ProgramCacheEntryType::Unloaded(ProgramRuntimeEnvironment::from(
-                BuiltinProgram::new_mock(),
-            )),
-            account_owner: ProgramCacheEntryOwner::LoaderV2,
-            deployment_slot: 10,
-            stats: Arc::default(),
-            latest_access_slot: AtomicU64::default(),
-        });
+        let closed_other_slot = new_test_entry_with_owner(
+            9,
+            ProgramCacheEntryOwner::LoaderV2,
+            new_closed_entry(env.clone()),
+        );
+        let closed_current_slot = new_test_entry_with_owner(
+            10,
+            ProgramCacheEntryOwner::LoaderV2,
+            new_closed_entry(env.clone()),
+        );
+        let unloaded_current_env = new_test_entry_with_owner(
+            10,
+            ProgramCacheEntryOwner::LoaderV2,
+            new_unloaded_entry(get_mock_program_runtime_environment()),
+        );
+        let unloaded_upcoming_env = new_test_entry_with_owner(
+            10,
+            ProgramCacheEntryOwner::LoaderV2,
+            new_unloaded_entry(ProgramRuntimeEnvironment::from(BuiltinProgram::new_mock())),
+        );
+
+        // Here the ordering is important.
+        // We have an older `Closed` tombstone for a different slot, so when we
+        // go to insert `Closed` for slot 10, they are allowed to coexist.
         assert!(!cache.assign_program(&env, program_id, 9, closed_other_slot.clone()));
-        assert!(!cache.assign_program(&env, program_id, 10, closed_current_slot));
-        assert!(!cache.assign_program(&env, program_id, 10, loaded_entry_upcoming_env.clone()));
-        assert!(!cache.assign_program(&env, program_id, 10, loaded_entry_current_env.clone()));
-        // Only the conflicting entry in the same slot which does not have a different environment is removed
+        assert!(!cache.assign_program(&env, program_id, 10, closed_current_slot.clone()));
+        assert_eq!(
+            cache.get_slot_versions_for_tests(&program_id),
+            &[closed_other_slot.clone(), closed_current_slot.clone()]
+        );
+
+        // However, if we then insert an `Unloaded` entry for slot 10, it will
+        // nuke the `Closed` tombstone that was there.
+        //
+        // This is because a closed tombstone has no environment, so the
+        // env-based sweep criteria unwraps to `keep=false`.
+        //
+        // Inserting an `env=None` entry here would also cause `keep=false`,
+        // but none such transitions are allowed.
+        assert!(!cache.assign_program(&env, program_id, 10, unloaded_current_env.clone()));
+        assert_eq!(
+            cache.get_slot_versions_for_tests(&program_id),
+            &[
+                closed_other_slot.clone(),
+                unloaded_current_env.clone() // <-- Closed is gone for slot 10
+            ]
+        );
+
+        // Now insert another unloaded entry for the same slot 10, but on a
+        // different environment. When both entries have `env=Some`, they are
+        // actually compared, and if they differ, we get `keep=true`.
+        assert!(!cache.assign_program(&env, program_id, 10, unloaded_upcoming_env.clone()));
         assert_eq!(
             cache.get_slot_versions_for_tests(&program_id),
             &[
                 closed_other_slot,
-                loaded_entry_current_env,
-                loaded_entry_upcoming_env
+                unloaded_current_env,
+                unloaded_upcoming_env
             ]
         );
     }
