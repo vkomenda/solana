@@ -636,13 +636,6 @@ fn get_merkle_node(shred: &[u8], offsets: Range<usize>) -> Result<Hash, Error> {
     Ok(hashv(&[MERKLE_HASH_PREFIX_LEAF, node]))
 }
 
-// Returns a buffer aligned to 64 bytes to increase the performance of vector ops.
-fn aligned_mut(buf: &mut Vec<Gf2p8_11d>, len: usize) -> &mut [Gf2p8_11d] {
-    buf.resize(len + 63, Gf2p8_11d(0));
-    let off = buf.as_ptr().align_offset(64);
-    &mut buf[off..off + len]
-}
-
 pub(super) fn recover(
     shreds: Vec<Shred>,
 ) -> Result<impl Iterator<Item = Result<Shred, Error>> + use<>, Error> {
@@ -774,7 +767,7 @@ pub(super) fn recover(
     let mut nodes: [Option<Hash>; SHREDS_PER_FEC_BLOCK] = [None; SHREDS_PER_FEC_BLOCK];
 
     let recovered = RS_RECEIVED.with_borrow_mut(|mut rec| {
-        let mut rec = aligned_mut(&mut rec, SHREDS_PER_FEC_BLOCK * shard_len);
+        rec.resize(SHREDS_PER_FEC_BLOCK * shard_len, 0u8.into());
 
         // Ones for the given shreds and zeros for erasures. Codec ordering: parity shard indices
         // are less than message shard indices.
@@ -1218,8 +1211,8 @@ fn finish_erasure_batch(
     debug_assert_eq!(num_coding_shreds, CODING_SHREDS_PER_FEC_BLOCK);
 
     let shard_len = shreds[0].erasure_shard_mut()?.len();
-    RS_MESSAGE.with_borrow_mut(|mut msg| {
-        let msg = aligned_mut(&mut msg, DATA_SHREDS_PER_FEC_BLOCK * shard_len);
+    RS_MESSAGE.with_borrow_mut(|msg| {
+        msg.resize(DATA_SHREDS_PER_FEC_BLOCK * shard_len, 0u8.into());
 
         for (i, shred) in shreds.iter_mut().take(num_data_shreds).enumerate() {
             let shard = shred.erasure_shard_mut()?;
@@ -1230,10 +1223,10 @@ fn finish_erasure_batch(
         }
 
         RS_PARITY.with_borrow_mut(|mut par| {
-            let mut par = aligned_mut(&mut par, CODING_SHREDS_PER_FEC_BLOCK * shard_len);
+            par.resize(CODING_SHREDS_PER_FEC_BLOCK * shard_len, 0u8.into());
 
             RS_ENCODE_WORKSPACE.with_borrow_mut(|mut ws| {
-                let mut ws = aligned_mut(&mut ws, CODING_SHREDS_PER_FEC_BLOCK * shard_len);
+                ws.resize(CODING_SHREDS_PER_FEC_BLOCK * shard_len, 0u8.into());
                 let rs = Rs::<SHREDS_PER_FEC_BLOCK, CODING_SHREDS_PER_FEC_BLOCK>::default();
                 rs.encode_systematic_sharded(&msg, &mut par, &mut ws, shard_len);
             });
