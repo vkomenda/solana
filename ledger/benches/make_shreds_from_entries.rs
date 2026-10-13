@@ -7,7 +7,10 @@ use {
     solana_keypair::Keypair,
     solana_ledger::{
         genesis_utils::create_genesis_config,
-        shred::{ProcessShredsStats, Shred, Shredder, filter::ShredRecoveryContext},
+        shred::{
+            DATA_SHREDS_PER_FEC_BLOCK, ProcessShredsStats, Shred, Shredder,
+            filter::ShredRecoveryContext,
+        },
     },
     solana_packet::PACKET_DATA_SIZE,
     solana_pubkey::Pubkey,
@@ -71,13 +74,17 @@ fn make_shreds_from_entries(
     chained_merkle_root: Hash,
     stats: &mut ProcessShredsStats,
 ) -> (Vec<Shred>, Vec<Shred>) {
+    // Erasure batches are fixed 32:32, so data and code indices start together
+    // at an FEC set boundary.
+    let next_shred_index = 0;
+    let next_code_index = next_shred_index;
     let (data, code) = shredder.entries_to_merkle_shreds_for_tests(
         keypair,
         entries,
         is_last_in_slot,
         chained_merkle_root,
-        0,
-        0,
+        next_shred_index,
+        next_code_index,
         stats,
     );
     (black_box(data), black_box(code))
@@ -139,6 +146,8 @@ fn run_recover_shreds(
     is_last_in_slot: bool,
 ) {
     let mut rng = rand::rng();
+    // The recovery filter drops shreds more than MAX_SHRED_DISTANCE_MINIMUM
+    // (500) slots ahead of the root bank, which is at slot 0.
     let slot = rng.random_range(1..=400);
     let parent_offset = 1;
     let shredder = Shredder::new(
@@ -175,15 +184,34 @@ fn run_recover_shreds(
         let k = rng.random_range(0..data.len());
         data.remove(k);
     }
+    // Keep `num_code` random coding shreds, so that exactly enough shreds are
+    // received to recover the erasure batch.
     for i in 0..num_code {
         let j = rng.random_range(i..code.len());
         code.swap(i, j);
     }
+    code.truncate(num_code);
     code.sort_unstable_by_key(|shred| shred.index());
+    let num_missing_data = DATA_SHREDS_PER_FEC_BLOCK - data.len();
     let mut shreds = data;
     shreds.extend(code);
     c.bench_function(name, |b| {
         let mut shred_recovery_context = new_shred_recovery_context(&shreds);
+        // Guard against the recovery filter silently discarding the input.
+        let mut recovered_shreds = Vec::new();
+        let mut recovered_data_shreds = Vec::new();
+        shred_recovery_context
+            .recover(
+                shreds.clone(),
+                &mut recovered_shreds,
+                &mut recovered_data_shreds,
+            )
+            .expect("erasure batch should be recoverable");
+        assert_eq!(
+            recovered_data_shreds.len(),
+            num_missing_data,
+            "every missing data shred should be recovered"
+        );
         b.iter(|| {
             let mut recovered_shreds = Vec::new();
             let mut recovered_data_shreds = Vec::new();
